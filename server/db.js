@@ -1,0 +1,261 @@
+const path = require('path');
+const fs = require('fs');
+const Database = require('better-sqlite3');
+
+const DATA_DIR = path.join(__dirname, '..', 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const db = new Database(path.join(DATA_DIR, 'personal-os.db'));
+db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  name TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  notes TEXT DEFAULT '',
+  date TEXT NOT NULL,
+  time TEXT DEFAULT '',
+  priority TEXT DEFAULT 'medium',
+  status TEXT DEFAULT 'pending',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS projects (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  status TEXT DEFAULT 'running',
+  start_date TEXT DEFAULT '',
+  end_date TEXT DEFAULT '',
+  progress INTEGER DEFAULT 0,
+  color TEXT DEFAULT '#6366f1',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS project_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  done INTEGER DEFAULT 0,
+  position INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  details TEXT DEFAULT '',
+  estimate_date TEXT DEFAULT '',
+  status TEXT DEFAULT 'idea',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ideas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  content TEXT DEFAULT '',
+  tags TEXT DEFAULT '',
+  color TEXT DEFAULT '#f59e0b',
+  pinned INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  filename TEXT NOT NULL,
+  original TEXT NOT NULL,
+  mime TEXT DEFAULT '',
+  size INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS expenses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  amount REAL NOT NULL DEFAULT 0,
+  category TEXT DEFAULT 'general',
+  date TEXT NOT NULL,
+  notes TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS habits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  icon TEXT DEFAULT '✅',
+  color TEXT DEFAULT '#10b981',
+  archived INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS habit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
+  date TEXT NOT NULL,
+  UNIQUE(habit_id, date)
+);
+
+CREATE TABLE IF NOT EXISTS health (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  date TEXT NOT NULL,
+  weight REAL,
+  sleep_hours REAL,
+  water_glasses INTEGER,
+  steps INTEGER,
+  mood INTEGER,
+  notes TEXT DEFAULT '',
+  UNIQUE(user_id, date)
+);
+
+CREATE TABLE IF NOT EXISTS trips (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  destination TEXT NOT NULL,
+  start_date TEXT DEFAULT '',
+  end_date TEXT DEFAULT '',
+  budget REAL DEFAULT 0,
+  status TEXT DEFAULT 'planning',
+  notes TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS trip_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+  type TEXT DEFAULT 'checklist',
+  content TEXT NOT NULL,
+  date TEXT DEFAULT '',
+  done INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  date TEXT NOT NULL,
+  start_time TEXT DEFAULT '',
+  end_time TEXT DEFAULT '',
+  source TEXT DEFAULT 'local',
+  external_id TEXT DEFAULT '',
+  notes TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS debts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  person TEXT NOT NULL,
+  type TEXT DEFAULT 'borrowed',
+  amount REAL NOT NULL DEFAULT 0,
+  paid REAL DEFAULT 0,
+  date TEXT DEFAULT '',
+  due_date TEXT DEFAULT '',
+  notes TEXT DEFAULT '',
+  status TEXT DEFAULT 'active',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS investments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  type TEXT DEFAULT 'made',
+  partner TEXT DEFAULT '',
+  amount REAL NOT NULL DEFAULT 0,
+  expected_return TEXT DEFAULT '',
+  start_date TEXT DEFAULT '',
+  end_date TEXT DEFAULT '',
+  status TEXT DEFAULT 'active',
+  notes TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS investment_txns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  investment_id INTEGER NOT NULL REFERENCES investments(id) ON DELETE CASCADE,
+  type TEXT DEFAULT 'profit',
+  amount REAL NOT NULL DEFAULT 0,
+  date TEXT DEFAULT '',
+  notes TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  key TEXT NOT NULL,
+  value TEXT DEFAULT '',
+  PRIMARY KEY (user_id, key)
+);
+
+CREATE TABLE IF NOT EXISTS chats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  plan TEXT DEFAULT 'monthly',
+  months INTEGER DEFAULT 1,
+  amount REAL DEFAULT 0,
+  method TEXT DEFAULT '',
+  trx_id TEXT DEFAULT '',
+  status TEXT DEFAULT 'pending',
+  note TEXT DEFAULT '',
+  created_at TEXT DEFAULT (datetime('now')),
+  decided_at TEXT DEFAULT ''
+);
+`);
+
+// Migration: SaaS columns on users — role (owner|user), plan, expiry
+const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+if (!userCols.includes('role')) db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'");
+if (!userCols.includes('plan')) db.exec("ALTER TABLE users ADD COLUMN plan TEXT DEFAULT 'trial'");
+if (!userCols.includes('plan_expires')) db.exec("ALTER TABLE users ADD COLUMN plan_expires TEXT DEFAULT ''");
+// the first account ever created is the owner — full lifetime access
+if (!db.prepare("SELECT id FROM users WHERE role='owner'").get()) {
+  const first = db.prepare('SELECT id FROM users ORDER BY id ASC LIMIT 1').get();
+  if (first) db.prepare("UPDATE users SET role='owner', plan='lifetime', plan_expires='' WHERE id=?").run(first.id);
+}
+
+// Migration: transaction type (expense | income) — existing rows stay expenses
+const expenseCols = db.prepare('PRAGMA table_info(expenses)').all().map(c => c.name);
+if (!expenseCols.includes('type')) {
+  db.exec("ALTER TABLE expenses ADD COLUMN type TEXT DEFAULT 'expense'");
+}
+
+function getSetting(userId, key) {
+  const row = db.prepare('SELECT value FROM settings WHERE user_id=? AND key=?').get(userId, key);
+  return row ? row.value : '';
+}
+
+function setSetting(userId, key, value) {
+  db.prepare(`INSERT INTO settings (user_id, key, value) VALUES (?,?,?)
+    ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value`).run(userId, key, String(value ?? ''));
+}
+
+module.exports = { db, getSetting, setSetting, DATA_DIR };

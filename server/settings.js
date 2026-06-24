@@ -1,0 +1,52 @@
+const express = require('express');
+const { db, getSetting, setSetting } = require('./db');
+
+const router = express.Router();
+
+// Keys whose values are secrets — never sent back to the client in full
+const SECRET_KEYS = ['ai_api_key', 'notion_token', 'google_client_secret', 'google_tokens', 'telegram_bot_token'];
+
+const ALLOWED_KEYS = [
+  'ai_provider', 'ai_api_key', 'ai_model', 'ai_base_url',
+  'notion_token',
+  'google_client_id', 'google_client_secret',
+  'telegram_bot_token', 'telegram_chat_id', 'telegram_ai_reports', 'timezone',
+  'currency', 'theme',
+];
+
+function mask(value) {
+  if (!value) return '';
+  if (value.length <= 8) return '••••';
+  return value.slice(0, 4) + '••••••••' + value.slice(-4);
+}
+
+router.get('/settings', (req, res) => {
+  const rows = db.prepare('SELECT key, value FROM settings WHERE user_id = ?').all(req.userId);
+  const out = {};
+  for (const r of rows) {
+    if (r.key === 'google_tokens') { out.google_connected = !!r.value; continue; }
+    out[r.key] = SECRET_KEYS.includes(r.key) ? mask(r.value) : r.value;
+    if (SECRET_KEYS.includes(r.key)) out[r.key + '_set'] = !!r.value;
+  }
+  res.json(out);
+});
+
+router.post('/settings', (req, res) => {
+  for (const [key, value] of Object.entries(req.body || {})) {
+    if (!ALLOWED_KEYS.includes(key)) continue;
+    // ignore masked placeholder values being echoed back
+    if (typeof value === 'string' && value.includes('••')) continue;
+    setSetting(req.userId, key, value);
+  }
+  res.json({ ok: true });
+});
+
+router.delete('/settings/:key', (req, res) => {
+  if (![...ALLOWED_KEYS, 'google_tokens'].includes(req.params.key)) {
+    return res.status(400).json({ error: 'Unknown setting' });
+  }
+  db.prepare('DELETE FROM settings WHERE user_id=? AND key=?').run(req.userId, req.params.key);
+  res.json({ ok: true });
+});
+
+module.exports = router;
