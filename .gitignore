@@ -1,0 +1,9 @@
+node_modules/
+data/
+.env
+*.db
+*.db-shm
+*.db-wal
+uploads/
+*.zip
+.jwt-secret
