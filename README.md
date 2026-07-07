@@ -66,7 +66,9 @@ Personal OS is multi-tenant and ready to sell:
 
 Pricing and payment are **manual by design** (no payment gateway needed) — perfect for bKash/Nagad markets. Customers pay you directly and submit the TrxID; you approve from the Admin Panel.
 
-See **[HOSTING.md](HOSTING.md)** for a step-by-step free hosting guide on Oracle Cloud (always-free VM).
+Hosting guides:
+- **[HOSTING.md](HOSTING.md)** — Oracle Cloud (always-free VM)
+- **[AWS-HOSTING.md](AWS-HOSTING.md)** — AWS EC2 (Ubuntu, free-tier eligible)
 
 ## Notes
 
