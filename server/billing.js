@@ -75,6 +75,22 @@ function notifyOwner(text) {
   } catch {}
 }
 
+// ============ Public routes (no auth — used by the landing page) ============
+const publicRouter = express.Router();
+
+publicRouter.get('/public/pricing', (req, res) => {
+  // The landing page may be hosted on a different domain (e.g. root domain
+  // vs. an "app." subdomain) — this is public, non-sensitive pricing data.
+  res.set('Access-Control-Allow-Origin', '*');
+  const cfg = saasConfig();
+  res.json({
+    monthly: Number(cfg.saas_monthly_price) || 0,
+    yearly: Number(cfg.saas_yearly_price) || 0,
+    currency: cfg.saas_currency,
+    trial_days: Number(cfg.saas_trial_days) || 0,
+  });
+});
+
 // ============ User billing routes ============
 const router = express.Router();
 
@@ -191,4 +207,4 @@ router.post('/admin/config', requireOwner, (req, res) => {
   res.json({ ok: true });
 });
 
-module.exports = { router, subscriptionGate, isExpired, saasConfig, addDays, notifyOwner };
+module.exports = { router, publicRouter, subscriptionGate, isExpired, saasConfig, addDays, notifyOwner };
