@@ -1,5 +1,6 @@
 import { get, post, del } from '../api.js';
 import { el, icon, icons, modal, confirmModal, toast, fmtDate, fmtMoney } from '../ui.js';
+import { navigate } from '../app.js';
 
 export default async function adminView() {
   let tab = 'overview';
@@ -42,7 +43,8 @@ export default async function adminView() {
         stat('👥 Total customers', o.users, `${o.active} active`, null),
         stat('✅ Active subscriptions', o.active, `${o.expired} expired`, '#34d399'),
         stat('⏳ Pending payments', o.pendingPayments, o.pendingPayments ? 'needs your review' : 'all clear', o.pendingPayments ? '#fbbf24' : null),
-        stat('⚠️ Expiring in 7 days', o.expiringSoon, 'remind them to renew', o.expiringSoon ? '#fbbf24' : null)),
+        stat('⚠️ Expiring in 7 days', o.expiringSoon, 'remind them to renew', o.expiringSoon ? '#fbbf24' : null),
+        stat('🎫 Open tickets', o.openTickets, o.openTickets ? 'customers waiting' : 'inbox zero', o.openTickets ? '#f87171' : '#34d399')),
       el('div', { class: 'grid cols-2' },
         stat('💰 Revenue this month', fmtMoney(o.revenueMonth, cur), 'approved payments', '#34d399'),
         stat('🏦 Total revenue', fmtMoney(o.revenueTotal, cur), 'all time', '#34d399')),
@@ -50,7 +52,12 @@ export default async function adminView() {
         el('div', { style: { display: 'flex', alignItems: 'center', gap: '12px' } },
           el('span', { style: { fontSize: '22px' } }, '⏳'),
           el('div', { class: 'grow' }, el('b', {}, `${o.pendingPayments} payment(s) waiting for approval`)),
-          el('button', { class: 'btn sm', onclick: () => { tab = 'payments'; tabs.querySelectorAll('.tab')[1].click(); } }, 'Review now'))) : null);
+          el('button', { class: 'btn sm', onclick: () => { tab = 'payments'; tabs.querySelectorAll('.tab')[1].click(); } }, 'Review now'))) : null,
+      o.openTickets ? el('div', { class: 'card', style: { marginTop: '12px', borderColor: 'var(--red)' } },
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: '12px' } },
+          el('span', { style: { fontSize: '22px' } }, '🎫'),
+          el('div', { class: 'grow' }, el('b', {}, `${o.openTickets} open support ticket(s)`)),
+          el('button', { class: 'btn sm', onclick: () => { navigate('support'); } }, 'Open inbox'))) : null);
   }
 
   // ---- Payments ----

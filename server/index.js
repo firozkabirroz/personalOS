@@ -8,6 +8,7 @@ const aiRouter = require('./ai');
 const integrationsRouter = require('./integrations');
 const { router: telegramRouter, startScheduler } = require('./telegram');
 const { router: billingRouter, publicRouter: billingPublicRouter, subscriptionGate } = require('./billing');
+const { router: supportRouter } = require('./support');
 
 const app = express();
 const PORT = process.env.PORT || 4321;
@@ -33,6 +34,7 @@ app.use('/api', (req, res, next) => {
 
 app.use('/api', requireAuth, subscriptionGate);
 app.use('/api', requireAuth, billingRouter);
+app.use('/api', requireAuth, supportRouter);
 app.use('/api', requireAuth, routes);
 app.use('/api', requireAuth, filesRouter);
 app.use('/api', requireAuth, settingsRouter);

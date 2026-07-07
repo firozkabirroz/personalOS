@@ -19,50 +19,73 @@ import debts from './views/debts.js';
 import invest from './views/invest.js';
 import billing from './views/billing.js';
 import admin from './views/admin.js';
+import support from './views/support.js';
+import team from './views/team.js';
 
 const root = document.getElementById('root');
 export let currentUser = null;
 
+// Personal-life modules — meant for customers (and the owner, who also uses
+// the app day-to-day). Staff-only roles (manager/support) don't see these.
+const PERSONAL_ROLES = ['user', 'owner'];
+
 const NAV = [
-  { group: 'Overview', items: [
+  { group: 'Overview', roles: PERSONAL_ROLES, items: [
     { route: 'dashboard', label: 'Dashboard', icon: 'dashboard', view: dashboard },
   ]},
-  { group: 'Planner', items: [
+  { group: 'Planner', roles: PERSONAL_ROLES, items: [
     { route: 'tasks', label: 'Daily Tasks', icon: 'tasks', view: tasks },
     { route: 'calendar', label: 'Calendar', icon: 'calendar', view: calendar },
   ]},
-  { group: 'Projects', items: [
+  { group: 'Projects', roles: PERSONAL_ROLES, items: [
     { route: 'running', label: 'Running Projects', icon: 'running', view: () => projects('running') },
     { route: 'upcoming', label: 'Upcoming Projects', icon: 'upcoming', view: () => projects('upcoming') },
     { route: 'plans', label: 'Next Plans', icon: 'plan', view: plans },
     { route: 'ideas', label: 'Brainstorming', icon: 'idea', view: ideas },
     { route: 'files', label: 'Project Files', icon: 'folder', view: files },
   ]},
-  { group: 'Finance', items: [
+  { group: 'Finance', roles: PERSONAL_ROLES, items: [
     { route: 'finance', label: 'Finance Overview', icon: 'finance', view: finance },
     { route: 'expenses', label: 'Income & Expenses', icon: 'expense', view: expenses },
     { route: 'debts', label: 'Debts & Loans', icon: 'debt', view: debts },
     { route: 'invest', label: 'Investments', icon: 'invest', view: invest },
   ]},
-  { group: 'Life', items: [
+  { group: 'Life', roles: PERSONAL_ROLES, items: [
     { route: 'habits', label: 'Habit Tracker', icon: 'habit', view: habits },
     { route: 'health', label: 'Health Dashboard', icon: 'health', view: health },
     { route: 'travel', label: 'Travel Planner', icon: 'travel', view: travel },
   ]},
-  { group: 'Intelligence', items: [
+  { group: 'Intelligence', roles: PERSONAL_ROLES, items: [
     { route: 'ai', label: 'AI Assistant', icon: 'ai', view: ai },
   ]},
+  { group: 'Support', items: [
+    { route: 'support', label: 'Support', icon: 'ticket', view: support },
+  ]},
   { group: 'System', items: [
-    { route: 'billing', label: 'My Subscription', icon: 'card', view: billing },
+    { route: 'billing', label: 'My Subscription', icon: 'card', roles: ['user'], view: billing },
     { route: 'settings', label: 'Settings', icon: 'settings', view: settings },
   ]},
-  { group: 'Admin', ownerOnly: true, items: [
+  { group: 'Admin', roles: ['owner', 'manager'], items: [
     { route: 'admin', label: 'Admin Panel', icon: 'shield', view: admin },
+  ]},
+  { group: 'Team', roles: ['owner'], items: [
+    { route: 'team', label: 'Team', icon: 'team', view: team },
   ]},
 ];
 
 const ROUTES = {};
 for (const g of NAV) for (const item of g.items) ROUTES[item.route] = item;
+
+function allowed(entry, role) {
+  return !entry.roles || entry.roles.includes(role);
+}
+
+// Where each role lands after login / on an empty hash
+function defaultRoute(role) {
+  if (role === 'support') return 'support';
+  if (role === 'manager') return 'admin';
+  return 'dashboard';
+}
 
 // ============ Auth screens ============
 function authScreen(mode, hasUsers) {
@@ -119,19 +142,22 @@ let mainEl = null;
 function shell() {
   root.innerHTML = '';
   const navButtons = {};
-  const isOwner = currentUser.role === 'owner';
+  const role = currentUser.role;
 
   const sidebar = el('aside', { class: 'sidebar' },
     el('div', { class: 'side-logo' }, el('div', { class: 'mark' }, 'P'), el('span', {}, 'Personal OS')),
-    NAV.filter(g => !g.ownerOnly || isOwner).map(g => el('div', { class: 'nav-group' },
-      el('div', { class: 'nav-label' }, g.group),
-      g.items.map(item => {
-        const b = el('button', { class: 'nav-item', onclick: () => navigate(item.route) },
-          icon(item.icon), el('span', {}, item.label));
-        navButtons[item.route] = b;
-        return b;
-      }),
-    )),
+    NAV.filter(g => allowed(g, role))
+      .map(g => ({ ...g, items: g.items.filter(item => allowed(item, role)) }))
+      .filter(g => g.items.length)
+      .map(g => el('div', { class: 'nav-group' },
+        el('div', { class: 'nav-label' }, g.group),
+        g.items.map(item => {
+          const b = el('button', { class: 'nav-item', onclick: () => navigate(item.route) },
+            icon(item.icon), el('span', {}, item.label));
+          navButtons[item.route] = b;
+          return b;
+        }),
+      )),
     el('div', { class: 'side-footer' },
       el('div', { class: 'side-user' },
         el('div', { class: 'avatar' }, (currentUser.name || currentUser.username || '?')[0].toUpperCase()),
@@ -153,9 +179,11 @@ export function navigate(route) {
 }
 
 async function renderRoute() {
-  const route = (location.hash.replace(/^#\//, '') || 'dashboard').split('?')[0];
-  const item = ROUTES[route] || ROUTES.dashboard;
-  for (const [r, b] of Object.entries(shell.navButtons || {})) b.classList.toggle('active', r === (ROUTES[route] ? route : 'dashboard'));
+  const fallback = defaultRoute(currentUser.role);
+  const route = (location.hash.replace(/^#\//, '') || fallback).split('?')[0];
+  const item = ROUTES[route] || ROUTES[fallback];
+  const activeRoute = ROUTES[route] ? route : fallback;
+  for (const [r, b] of Object.entries(shell.navButtons || {})) b.classList.toggle('active', r === activeRoute);
   mainEl.innerHTML = '';
   mainEl.scrollTop = 0;
   try {
