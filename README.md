@@ -66,6 +66,8 @@ Personal OS is multi-tenant and ready to sell:
 
 Pricing and payment are **manual by design** (no payment gateway needed) — perfect for bKash/Nagad markets. Customers pay you directly and submit the TrxID; you approve from the Admin Panel.
 
+**Landing/sales page:** `public-landing/index.html` is a self-contained marketing page (features, pricing, FAQ) meant to be hosted on your root domain while the app itself runs on a subdomain (e.g. `app.yourdomain.com`). It pulls live pricing from `GET /api/public/pricing` (no auth) so it never goes stale, and its "Start free trial" buttons deep-link into the app's registration screen via `?signup=1`. Edit the `APP_URL` constant near the bottom of the file to point at your app's domain. For local testing it's also served at `/landing` by the same Node app.
+
 Hosting guides:
 - **[HOSTING.md](HOSTING.md)** — Oracle Cloud (always-free VM)
 - **[AWS-HOSTING.md](AWS-HOSTING.md)** — AWS EC2 (Ubuntu, free-tier eligible)

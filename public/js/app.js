@@ -191,7 +191,9 @@ async function lockScreen() {
 async function boot() {
   if (!token()) {
     const { hasUsers } = await api('/auth/status');
-    return authScreen(hasUsers ? 'login' : 'register', hasUsers);
+    // landing page "Start free trial" links here with ?signup=1 to skip straight to registration
+    const forceSignup = new URLSearchParams(location.search).get('signup') === '1';
+    return authScreen(forceSignup || !hasUsers ? 'register' : 'login', hasUsers);
   }
   try {
     const { user } = await api('/auth/me');

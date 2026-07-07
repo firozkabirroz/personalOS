@@ -152,11 +152,62 @@ certbot ইমেইল চাইবে → terms-এ `Y` → HTTP থেকে 
 
 ---
 
-## ধাপ ৯ — Google OAuth (যদি ব্যবহার করেন)
+## ধাপ ৯ — Sales/Landing page (রুট ডোমেইনে)
+
+`app.yourdomain.com`-এ চলছে আসল অ্যাপ, আর `yourdomain.com` (রুট) দিয়ে বিক্রি করার landing/sales page দেখাতে পারেন। কোডে এটা `public-landing/index.html`-এ আগে থেকেই আছে — শুধু server করে দিতে হবে।
+
+**১. Root domain-এর জন্য DNS record বানান** (Cloudflare বা যেখানেই):
+```
+Type: A
+Name: @  (এবং চাইলে www)
+Value: YOUR_ELASTIC_IP
+Proxy: DNS only (ধূসর মেঘ)
+```
+
+**২. Landing page-এর `APP_URL` ঠিক করুন** (যদি `app.yourdomain.com` ছাড়া অন্য নাম ব্যবহার করেন):
+```bash
+nano ~/personal-os/public-landing/index.html
+```
+এই লাইনটা খুঁজুন এবং নিজের app domain বসান:
+```js
+: 'https://app.syndaps.com';   // production: change to your app's URL
+```
+
+**৩. এই ডোমেইনের জন্য আলাদা nginx block বানান** (static file, Node app-এর সাথে proxy নয়):
+```bash
+sudo nano /etc/nginx/sites-available/landing
+```
+পেস্ট করুন (`yourdomain.com` বদলান):
+```nginx
+server {
+    listen 80;
+    server_name yourdomain.com www.yourdomain.com;
+    root /home/ubuntu/personal-os/public-landing;
+    index index.html;
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
+**৪. চালু করুন ও HTTPS নিন:**
+```bash
+sudo ln -s /etc/nginx/sites-available/landing /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d yourdomain.com -d www.yourdomain.com
+```
+
+✅ এখন **https://yourdomain.com** — sales page (প্রাইসিং সরাসরি Admin Panel-এর সেটিং থেকে আসে, তাই দাম বদলালে এখানেও অটো আপডেট হয়), আর **https://app.yourdomain.com** — আসল অ্যাপ।
+
+> `git pull` করলে landing page-ও আপডেট হয়ে যাবে (একই repo-র অংশ)।
+
+---
+
+## ধাপ ১০ — Google OAuth (যদি ব্যবহার করেন)
 
 Google Cloud Console → OAuth client → Authorized redirect URI:
 ```
-https://os.yourdomain.com/api/google/callback
+https://app.yourdomain.com/api/google/callback
 ```
 
 ---

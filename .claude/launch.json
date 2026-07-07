@@ -5,7 +5,8 @@
       "name": "personal-os",
       "runtimeExecutable": "node",
       "runtimeArgs": ["server/index.js"],
-      "port": 4321
+      "port": 4321,
+      "autoPort": true
     }
   ]
 }

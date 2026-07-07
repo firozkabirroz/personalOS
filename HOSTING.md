@@ -148,7 +148,31 @@ certbot ইমেইল চাইবে, terms-এ `Y`, redirect-এ `2` (HTTP�
 
 ---
 
-## ধাপ ৯ — Google OAuth আপডেট (যদি ব্যবহার করেন)
+## ধাপ ৯ — Sales/Landing page (রুট ডোমেইনে)
+
+`os.yourdomain.com`-এ আসল অ্যাপ, আর `yourdomain.com` (রুট) দিয়ে বিক্রির landing page দেখাতে পারেন — কোডে `public-landing/index.html`-এ আগে থেকেই আছে।
+
+```bash
+# প্রয়োজনে APP_URL বদলান (app.js-এর মতো ঠিক করে): nano ~/personal-os/public-landing/index.html
+sudo tee /etc/nginx/sites-available/landing <<'EOF'
+server {
+    listen 80;
+    server_name yourdomain.com www.yourdomain.com;
+    root /home/ubuntu/personal-os/public-landing;
+    index index.html;
+    location / { try_files $uri $uri/ /index.html; }
+}
+EOF
+sudo ln -s /etc/nginx/sites-available/landing /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d yourdomain.com -d www.yourdomain.com
+```
+
+প্রাইসিং সরাসরি Admin Panel-এর সেটিং থেকে আসে — দাম বদলালে landing page-এও অটো আপডেট হয়।
+
+---
+
+## ধাপ ১০ — Google OAuth আপডেট (যদি ব্যবহার করেন)
 
 Google Cloud Console → আপনার OAuth client → Authorized redirect URI:
 `https://os.yourdomain.com/api/google/callback`

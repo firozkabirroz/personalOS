@@ -7,7 +7,7 @@ const settingsRouter = require('./settings');
 const aiRouter = require('./ai');
 const integrationsRouter = require('./integrations');
 const { router: telegramRouter, startScheduler } = require('./telegram');
-const { router: billingRouter, subscriptionGate } = require('./billing');
+const { router: billingRouter, publicRouter: billingPublicRouter, subscriptionGate } = require('./billing');
 
 const app = express();
 const PORT = process.env.PORT || 4321;
@@ -18,8 +18,12 @@ app.set('trust proxy', 1);
 
 app.use(express.json({ limit: '5mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
+// Marketing/sales page — served statically; on a real deployment this is
+// usually put on the root domain via a separate nginx block instead
+app.use('/landing', express.static(path.join(__dirname, '..', 'public-landing')));
 
 app.use('/api/auth', authRouter);
+app.use('/api', billingPublicRouter);
 
 // Google OAuth callback must be reachable without the Bearer header
 app.use('/api', (req, res, next) => {
