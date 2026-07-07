@@ -24,7 +24,11 @@ export async function api(path, options = {}) {
     location.reload();
     throw new Error(data?.error || 'Subscription expired');
   }
-  if (!resp.ok) throw new Error(data?.error || `Request failed (${resp.status})`);
+  if (!resp.ok) {
+    const err = new Error(data?.error || `Request failed (${resp.status})`);
+    if (data?.limitReached) err.limitReached = true;
+    throw err;
+  }
   return data;
 }
 

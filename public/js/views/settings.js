@@ -151,7 +151,7 @@ export default async function settingsView() {
       el('div', {}, el('h2', {}, 'Settings'), el('p', {}, 'Connect AI and integrations — everything configurable right here, no code'))),
     el('div', { class: 'grid cols-2' },
 
-      section('🤖 AI Assistant', 'Plug in any AI provider. Your key is stored locally on your machine and never shown again in full.',
+      section('🤖 AI Assistant — your own key (optional)', 'Your subscription plan already includes AI messages each month (see My Subscription). Add your own API key here only if you want unlimited usage beyond your plan\'s limit — it overrides the platform AI and is billed to you directly.',
         el('div', { class: 'field' }, el('label', {}, 'Provider'), provider),
         el('div', { class: 'field' }, el('label', {}, 'API key'), apiKey),
         el('div', { class: 'field' }, el('label', {}, 'Model'), model),

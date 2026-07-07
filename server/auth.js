@@ -82,7 +82,7 @@ function requireAuth(req, res, next) {
 }
 
 router.get('/me', requireAuth, (req, res) => {
-  const user = db.prepare('SELECT id, username, name, role, plan, plan_expires FROM users WHERE id = ?').get(req.userId);
+  const user = db.prepare('SELECT id, username, name, role, plan, plan_expires, tier_key FROM users WHERE id = ?').get(req.userId);
   if (!user) return res.status(401).json({ error: 'User not found' });
   const { isExpired } = require('./billing');
   res.json({ user: { ...user, expired: isExpired(user) } });

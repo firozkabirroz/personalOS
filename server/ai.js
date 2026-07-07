@@ -94,6 +94,79 @@ function buildContext(uid) {
   return lines.join('\n');
 }
 
+function currentMonthKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function getUsage(uid) {
+  const row = db.prepare('SELECT message_count FROM ai_usage WHERE user_id=? AND month=?').get(uid, currentMonthKey());
+  return row ? row.message_count : 0;
+}
+
+function incrementUsage(uid) {
+  db.prepare(`INSERT INTO ai_usage (user_id, month, message_count) VALUES (?,?,1)
+    ON CONFLICT(user_id, month) DO UPDATE SET message_count = message_count + 1`).run(uid, currentMonthKey());
+}
+
+function ownerId() {
+  return db.prepare("SELECT id FROM users WHERE role='owner' LIMIT 1").get()?.id || null;
+}
+
+function resolveTier(uid) {
+  const user = db.prepare('SELECT tier_key FROM users WHERE id=?').get(uid);
+  return db.prepare(`SELECT p.*, m.provider, m.model_id, m.name AS model_name FROM saas_plans p
+    LEFT JOIN ai_models m ON m.id = p.ai_model_id WHERE p.key = ? AND p.active = 1`).get(user?.tier_key || 'free');
+}
+
+// Decide which key/provider/model this chat request should use: the
+// platform's plan-provided model (counted against the monthly limit), the
+// user's own BYOK key (unlimited, their own cost), or neither (blocked).
+function resolveAIRoute(uid, role) {
+  const byok = {
+    provider: getSetting(uid, 'ai_provider') || 'anthropic',
+    apiKey: getSetting(uid, 'ai_api_key'),
+    model: getSetting(uid, 'ai_model'),
+    baseUrl: getSetting(uid, 'ai_base_url'),
+  };
+  const oid = ownerId();
+
+  if (role !== 'user') {
+    // Staff (owner/manager/support): their own key if set, else the best
+    // active platform model, unlimited — they're not paying customers.
+    if (byok.apiKey) return { ...byok, viaPlatform: false };
+    const topModel = db.prepare('SELECT * FROM ai_models WHERE active=1 ORDER BY input_cost DESC LIMIT 1').get();
+    if (!topModel) return { error: 'No AI model has been configured on the platform yet.' };
+    const apiKey = oid ? getSetting(oid, `admin_${topModel.provider}_key`) : '';
+    if (!apiKey) return { error: 'Platform AI key is not configured. Add it in Admin Panel → AI Models.' };
+    return { provider: topModel.provider, apiKey, model: topModel.model_id, viaPlatform: false };
+  }
+
+  const tier = resolveTier(uid);
+  const used = getUsage(uid);
+  const limit = tier?.ai_message_limit ?? 0;
+  const hasModel = !!(tier && tier.model_id);
+  const limitReached = hasModel && used >= limit;
+  const platformKey = hasModel && oid ? getSetting(oid, `admin_${tier.provider}_key`) : '';
+
+  if (hasModel && !limitReached && platformKey) {
+    return { provider: tier.provider, apiKey: platformKey, model: tier.model_id, viaPlatform: true, usage: { used, limit, remaining: limit - used - 1 } };
+  }
+  if (byok.apiKey) return { ...byok, viaPlatform: false };
+
+  if (!hasModel) {
+    return { error: 'এই প্ল্যানে কোনো AI মেসেজ অন্তর্ভুক্ত নেই। প্ল্যান আপগ্রেড করুন, অথবা Settings → AI Assistant-এ নিজের API key যোগ করুন।' };
+  }
+  if (limitReached) {
+    return {
+      error: `আপনার "${tier.name}" প্ল্যানে এই মাসের ${limit}টি AI মেসেজ শেষ হয়ে গেছে। প্ল্যান আপগ্রেড করুন, অথবা Settings → AI Assistant-এ নিজের API key যোগ করে সীমাহীন ব্যবহার করুন।`,
+      limitReached: true,
+    };
+  }
+  // model assigned + within limit, but the admin hasn't added the platform key yet
+  return { error: 'AI service সাময়িকভাবে বন্ধ আছে — অ্যাডমিনকে জানান, অথবা Settings → AI Assistant-এ নিজের API key যোগ করে ব্যবহার করুন।' };
+}
+
 async function callAnthropic({ apiKey, model, system, messages }) {
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -130,18 +203,28 @@ router.delete('/ai/history', (req, res) => {
   res.json({ ok: true });
 });
 
+router.get('/ai/usage', (req, res) => {
+  const user = db.prepare('SELECT role FROM users WHERE id=?').get(req.userId);
+  if (user.role !== 'user') return res.json({ unlimited: true });
+  const tier = resolveTier(req.userId);
+  const used = getUsage(req.userId);
+  res.json({
+    tier: tier ? { key: tier.key, name: tier.name, model_name: tier.model_name, limit: tier.ai_message_limit } : null,
+    used,
+    remaining: tier ? Math.max(0, tier.ai_message_limit - used) : 0,
+    hasOwnKey: !!getSetting(req.userId, 'ai_api_key'),
+  });
+});
+
 router.post('/ai/chat', async (req, res) => {
   const uid = req.userId;
   const { message } = req.body || {};
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message is empty' });
 
-  const provider = getSetting(uid, 'ai_provider') || 'anthropic';
-  const apiKey = getSetting(uid, 'ai_api_key');
-  const model = getSetting(uid, 'ai_model');
-  const baseUrl = getSetting(uid, 'ai_base_url');
-  if (!apiKey) return res.status(400).json({ error: 'No AI API key configured. Go to Settings → AI Assistant and add your API key.' });
-
-  const user = db.prepare('SELECT name, username FROM users WHERE id=?').get(uid);
+  const user = db.prepare('SELECT id, name, username, role FROM users WHERE id=?').get(uid);
+  const route = resolveAIRoute(uid, user.role);
+  if (route.error) return res.status(route.limitReached ? 429 : 400).json({ error: route.error, limitReached: !!route.limitReached });
+  const { provider, apiKey, model, baseUrl, viaPlatform, usage } = route;
   const context = buildContext(uid);
   const system = `You are the personal AI assistant inside "${user?.name || user?.username}"'s Personal OS dashboard.
 Today's date is ${new Date().toISOString().slice(0, 10)}.
@@ -162,6 +245,7 @@ ${context || '(No data yet — the user has not added anything.)'}
 
     db.prepare('INSERT INTO chats (user_id, role, content) VALUES (?,?,?)').run(uid, 'user', message);
     db.prepare('INSERT INTO chats (user_id, role, content) VALUES (?,?,?)').run(uid, 'assistant', reply);
+    if (viaPlatform) incrementUsage(uid);
 
     // Auto-forward AI task reports to Telegram when enabled in Settings
     if (getSetting(uid, 'telegram_ai_reports') === 'on') {
@@ -170,10 +254,12 @@ ${context || '(No data yet — the user has not added anything.)'}
         .catch(e => console.error('Telegram AI forward:', e.message));
     }
 
-    res.json({ reply });
+    res.json({ reply, usage: usage || null });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
 });
 
 module.exports = router;
+module.exports.router = router;
+module.exports.getUsage = getUsage;

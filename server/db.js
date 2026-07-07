@@ -246,7 +246,41 @@ CREATE TABLE IF NOT EXISTS payments (
   status TEXT DEFAULT 'pending',
   note TEXT DEFAULT '',
   created_at TEXT DEFAULT (datetime('now')),
-  decided_at TEXT DEFAULT ''
+  decided_at TEXT DEFAULT '',
+  tier_key TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS ai_models (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  input_cost REAL DEFAULT 0,
+  output_cost REAL DEFAULT 0,
+  position INTEGER DEFAULT 0,
+  active INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS saas_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  monthly_price REAL DEFAULT 0,
+  yearly_price REAL DEFAULT 0,
+  ai_model_id INTEGER REFERENCES ai_models(id) ON DELETE SET NULL,
+  ai_message_limit INTEGER DEFAULT 0,
+  is_free INTEGER DEFAULT 0,
+  position INTEGER DEFAULT 0,
+  active INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ai_usage (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  month TEXT NOT NULL,
+  message_count INTEGER DEFAULT 0,
+  PRIMARY KEY (user_id, month)
 );
 `);
 
@@ -258,13 +292,38 @@ if (!userCols.includes('plan_expires')) db.exec("ALTER TABLE users ADD COLUMN pl
 // the first account ever created is the owner — full lifetime access
 if (!db.prepare("SELECT id FROM users WHERE role='owner'").get()) {
   const first = db.prepare('SELECT id FROM users ORDER BY id ASC LIMIT 1').get();
-  if (first) db.prepare("UPDATE users SET role='owner', plan='lifetime', plan_expires='' WHERE id=?").run(first.id);
+  if (first) db.prepare("UPDATE users SET role='owner', plan='lifetime', plan_expires='', tier_key='business' WHERE id=?").run(first.id);
 }
 
 // Migration: transaction type (expense | income) — existing rows stay expenses
 const expenseCols = db.prepare('PRAGMA table_info(expenses)').all().map(c => c.name);
 if (!expenseCols.includes('type')) {
   db.exec("ALTER TABLE expenses ADD COLUMN type TEXT DEFAULT 'expense'");
+}
+
+// Migration: subscription tier on users (which AI model/limit they get) + payments.tier_key
+if (!userCols.includes('tier_key')) {
+  db.exec("ALTER TABLE users ADD COLUMN tier_key TEXT DEFAULT 'free'");
+  // staff accounts created before this column existed should get full access, not the free-tier default
+  db.exec("UPDATE users SET tier_key='business' WHERE role IN ('owner','manager','support')");
+}
+const paymentCols = db.prepare('PRAGMA table_info(payments)').all().map(c => c.name);
+if (!paymentCols.includes('tier_key')) db.exec("ALTER TABLE payments ADD COLUMN tier_key TEXT DEFAULT ''");
+
+// Seed default AI models + plan tiers once, based on real per-message cost research
+// (~3000 input + ~500 output tokens/message; BDT figures assume ~120 BDT/USD)
+if (!db.prepare('SELECT id FROM ai_models LIMIT 1').get()) {
+  const insModel = db.prepare(`INSERT INTO ai_models (name, provider, model_id, input_cost, output_cost, position) VALUES (?,?,?,?,?,?)`);
+  const gpt4oMini = insModel.run('GPT-4o mini', 'openai', 'gpt-4o-mini', 0.15, 0.60, 1).lastInsertRowid;
+  const haiku = insModel.run('Claude Haiku 4.5', 'anthropic', 'claude-haiku-4-5-20251001', 1.00, 5.00, 2).lastInsertRowid;
+  const sonnet = insModel.run('Claude Sonnet 5', 'anthropic', 'claude-sonnet-5', 3.00, 15.00, 3).lastInsertRowid;
+  insModel.run('Claude Opus 4.8', 'anthropic', 'claude-opus-4-8', 5.00, 25.00, 4);
+
+  const insPlan = db.prepare(`INSERT INTO saas_plans (key, name, monthly_price, yearly_price, ai_model_id, ai_message_limit, is_free, position) VALUES (?,?,?,?,?,?,?,?)`);
+  insPlan.run('free', 'Free', 0, 0, gpt4oMini, 15, 1, 1);
+  insPlan.run('starter', 'Starter', 100, 999, gpt4oMini, 200, 0, 2);
+  insPlan.run('pro', 'Pro', 300, 2999, haiku, 150, 0, 3);
+  insPlan.run('business', 'Business', 700, 6999, sonnet, 100, 0, 4);
 }
 
 function getSetting(userId, key) {
