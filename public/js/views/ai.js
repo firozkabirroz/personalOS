@@ -13,9 +13,18 @@ const SUGGESTIONS = [
 export default async function aiView() {
   const settings = await get('/settings');
   const history = await get('/ai/history');
-  const configured = settings.ai_api_key_set;
+  let usage = await get('/ai/usage');
 
   const scroll = el('div', { class: 'chat-scroll' });
+  const usageBadge = el('span', {});
+  function renderUsageBadge() {
+    if (usage.unlimited) { usageBadge.textContent = ''; return; }
+    const over = usage.remaining <= 0;
+    usageBadge.innerHTML = '';
+    usageBadge.append(el('span', { class: `badge ${over ? 'red' : usage.remaining <= 5 ? 'amber' : 'accent'}` },
+      `${usage.tier?.name || 'Free'} · ${usage.used}/${usage.tier?.limit ?? 0} AI মেসেজ`));
+  }
+  renderUsageBadge();
 
   function bubble(role, text) {
     const b = el('div', { class: `msg ${role === 'user' ? 'user' : 'ai'}` },
@@ -47,15 +56,15 @@ export default async function aiView() {
         'It can see your tasks, projects, plans, ideas, expenses, habits, health log, trips and calendar — ask anything about your life and work.'),
       el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center' } },
         SUGGESTIONS.map(s => el('button', { class: 'btn ghost sm', onclick: () => { input.value = s; send(); } }, s))),
-      !configured ? el('p', { style: { marginTop: '20px' } },
-        el('span', { class: 'badge amber' }, '⚠ No API key configured'), ' ',
-        el('a', { style: { cursor: 'pointer' }, onclick: () => navigate('settings') }, 'Set up in Settings →')) : null,
+      (!usage.unlimited && usage.remaining <= 0 && !usage.hasOwnKey) ? el('p', { style: { marginTop: '20px' } },
+        el('span', { class: 'badge red' }, '⚠ এই মাসের AI মেসেজ শেষ'), ' ',
+        el('a', { style: { cursor: 'pointer' }, onclick: () => navigate('billing') }, 'প্ল্যান আপগ্রেড করুন →')) : null,
     ));
   } else {
     history.forEach(m => scroll.append(bubble(m.role, m.content)));
   }
 
-  const input = el('textarea', { rows: 1, placeholder: configured ? 'Ask about your data… (Enter to send, Shift+Enter for new line)' : 'Add your AI API key in Settings first…' });
+  const input = el('textarea', { rows: 1, placeholder: 'Ask about your data… (Enter to send, Shift+Enter for new line)' });
   input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 140) + 'px'; });
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
 
@@ -80,10 +89,13 @@ export default async function aiView() {
       const r = await post('/ai/chat', { message: text });
       typing.remove();
       scroll.append(bubble('assistant', r.reply));
+      if (r.usage) { usage = { ...usage, used: r.usage.used + 1, remaining: r.usage.remaining }; renderUsageBadge(); }
     } catch (e) {
       typing.remove();
       scroll.append(el('div', { class: 'msg ai' }, el('div', { class: 'who' }, '!'),
-        el('div', { class: 'bubble', style: { borderColor: 'rgba(239,68,68,.4)', color: '#fca5a5' } }, e.message)));
+        el('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+          el('div', { class: 'bubble', style: { borderColor: 'rgba(239,68,68,.4)', color: '#fca5a5' } }, e.message),
+          e.limitReached ? el('a', { style: { cursor: 'pointer', fontSize: '13px' }, onclick: () => navigate('billing') }, 'প্ল্যান আপগ্রেড করুন →') : null)));
     }
     busy = false;
     sendBtn.disabled = false;
@@ -103,8 +115,8 @@ export default async function aiView() {
   return el('div', {},
     el('div', { class: 'page-head', style: { marginBottom: '12px' } },
       el('div', {}, el('h2', {}, 'AI Assistant'),
-        el('p', {}, settings.ai_provider ? `Provider: ${settings.ai_provider}${settings.ai_model ? ' · ' + settings.ai_model : ''}` : 'Connect any AI provider from Settings — no code needed')),
-      el('div', { class: 'page-actions' }, clearBtn)),
+        el('p', {}, usage.hasOwnKey ? `Using your own key: ${settings.ai_provider || 'anthropic'}${settings.ai_model ? ' · ' + settings.ai_model : ''}` : 'Included with your subscription plan')),
+      el('div', { class: 'page-actions' }, usageBadge, clearBtn)),
     el('div', { class: 'chat-wrap' },
       scroll,
       el('div', { class: 'chat-input' }, input, sendBtn)));
