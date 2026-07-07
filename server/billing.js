@@ -1,5 +1,8 @@
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const { db, getSetting, setSetting } = require('./db');
+
+const STAFF_ROLES = ['owner', 'manager', 'support'];
 
 // ============ Helpers ============
 function ownerId() {
@@ -52,7 +55,7 @@ function isExpired(user) {
 // Gate: blocks all app APIs when the subscription is over (billing/admin/auth stay open)
 function subscriptionGate(req, res, next) {
   const p = req.path;
-  if (p.startsWith('/billing') || p.startsWith('/admin') || p.startsWith('/auth') || p === '/google/callback') return next();
+  if (p.startsWith('/billing') || p.startsWith('/admin') || p.startsWith('/auth') || p.startsWith('/support') || p === '/google/callback') return next();
   const user = db.prepare('SELECT role, plan, plan_expires FROM users WHERE id=?').get(req.userId);
   if (isExpired(user)) {
     return res.status(402).json({ error: 'Your subscription has expired. Please renew to continue.', expired: true });
@@ -62,7 +65,14 @@ function subscriptionGate(req, res, next) {
 
 function requireOwner(req, res, next) {
   const user = db.prepare('SELECT role FROM users WHERE id=?').get(req.userId);
-  if (!user || user.role !== 'owner') return res.status(403).json({ error: 'Admin access only' });
+  if (!user || user.role !== 'owner') return res.status(403).json({ error: 'Only the owner can do this' });
+  next();
+}
+
+// Owner or manager — day-to-day admin work (customers, payments, pricing)
+function requireAdmin(req, res, next) {
+  const user = db.prepare('SELECT role FROM users WHERE id=?').get(req.userId);
+  if (!user || !['owner', 'manager'].includes(user.role)) return res.status(403).json({ error: 'Admin access only' });
   next();
 }
 
@@ -118,8 +128,8 @@ router.post('/billing/submit', (req, res) => {
   res.json(db.prepare('SELECT * FROM payments WHERE id=?').get(info.lastInsertRowid));
 });
 
-// ============ Admin routes (owner only) ============
-router.get('/admin/overview', requireOwner, (req, res) => {
+// ============ Admin routes (owner + manager) ============
+router.get('/admin/overview', requireAdmin, (req, res) => {
   const today = todayStr();
   const monthStart = today.slice(0, 8) + '01';
   const users = db.prepare("SELECT COUNT(*) c FROM users WHERE role='user'").get().c;
@@ -129,19 +139,20 @@ router.get('/admin/overview', requireOwner, (req, res) => {
     active,
     expired: users - active,
     pendingPayments: db.prepare("SELECT COUNT(*) c FROM payments WHERE status='pending'").get().c,
+    openTickets: db.prepare("SELECT COUNT(*) c FROM tickets WHERE status='open'").get().c,
     revenueMonth: db.prepare("SELECT COALESCE(SUM(amount),0) t FROM payments WHERE status='approved' AND decided_at >= ?").get(monthStart).t,
     revenueTotal: db.prepare("SELECT COALESCE(SUM(amount),0) t FROM payments WHERE status='approved'").get().t,
     expiringSoon: db.prepare("SELECT COUNT(*) c FROM users WHERE role='user' AND plan != 'lifetime' AND plan_expires >= ? AND plan_expires <= ?").get(today, addDays(7)).c,
   });
 });
 
-router.get('/admin/users', requireOwner, (req, res) => {
+router.get('/admin/users', requireAdmin, (req, res) => {
   const today = todayStr();
-  const rows = db.prepare(`SELECT id, username, name, role, plan, plan_expires, created_at FROM users ORDER BY id ASC`).all();
-  res.json(rows.map(u => ({ ...u, expired: isExpired(u), isOwner: u.role === 'owner' })));
+  const rows = db.prepare(`SELECT id, username, name, role, plan, plan_expires, created_at FROM users WHERE role='user' ORDER BY id ASC`).all();
+  res.json(rows.map(u => ({ ...u, expired: isExpired(u), isOwner: false })));
 });
 
-router.get('/admin/payments', requireOwner, (req, res) => {
+router.get('/admin/payments', requireAdmin, (req, res) => {
   let sql = `SELECT p.*, u.username, u.name FROM payments p JOIN users u ON u.id = p.user_id`;
   const params = [];
   if (req.query.status) { sql += ' WHERE p.status = ?'; params.push(req.query.status); }
@@ -149,7 +160,7 @@ router.get('/admin/payments', requireOwner, (req, res) => {
   res.json(db.prepare(sql).all(...params));
 });
 
-router.post('/admin/payments/:id/approve', requireOwner, (req, res) => {
+router.post('/admin/payments/:id/approve', requireAdmin, (req, res) => {
   const p = db.prepare("SELECT * FROM payments WHERE id=? AND status='pending'").get(req.params.id);
   if (!p) return res.status(404).json({ error: 'Pending payment not found' });
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(p.user_id);
@@ -160,14 +171,14 @@ router.post('/admin/payments/:id/approve', requireOwner, (req, res) => {
   res.json({ ok: true, plan_expires: newExpiry });
 });
 
-router.post('/admin/payments/:id/reject', requireOwner, (req, res) => {
+router.post('/admin/payments/:id/reject', requireAdmin, (req, res) => {
   const info = db.prepare("UPDATE payments SET status='rejected', note=?, decided_at=? WHERE id=? AND status='pending'")
     .run((req.body?.note || '').slice(0, 300), todayStr(), req.params.id);
   if (!info.changes) return res.status(404).json({ error: 'Pending payment not found' });
   res.json({ ok: true });
 });
 
-router.post('/admin/users/:id/plan', requireOwner, (req, res) => {
+router.post('/admin/users/:id/plan', requireAdmin, (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   if (user.role === 'owner') return res.status(400).json({ error: 'Owner account cannot be changed' });
@@ -189,17 +200,17 @@ router.post('/admin/users/:id/plan', requireOwner, (req, res) => {
   res.status(400).json({ error: 'Unknown action' });
 });
 
-router.delete('/admin/users/:id', requireOwner, (req, res) => {
+router.delete('/admin/users/:id', requireAdmin, (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  if (user.role === 'owner') return res.status(400).json({ error: 'Owner account cannot be deleted' });
+  if (user.role !== 'user') return res.status(400).json({ error: 'Use Team management to remove staff accounts' });
   db.prepare('DELETE FROM users WHERE id=?').run(user.id);
   res.json({ ok: true });
 });
 
-router.get('/admin/config', requireOwner, (req, res) => res.json(saasConfig()));
+router.get('/admin/config', requireAdmin, (req, res) => res.json(saasConfig()));
 
-router.post('/admin/config', requireOwner, (req, res) => {
+router.post('/admin/config', requireAdmin, (req, res) => {
   const oid = ownerId();
   for (const key of Object.keys(CONFIG_DEFAULTS)) {
     if (req.body[key] !== undefined) setSetting(oid, key, String(req.body[key]));
@@ -207,4 +218,41 @@ router.post('/admin/config', requireOwner, (req, res) => {
   res.json({ ok: true });
 });
 
-module.exports = { router, publicRouter, subscriptionGate, isExpired, saasConfig, addDays, notifyOwner };
+// ============ Team management (owner only — decides who has admin power) ============
+router.get('/admin/team', requireOwner, (req, res) => {
+  const rows = db.prepare(`SELECT id, username, name, role, created_at FROM users WHERE role IN ('owner','manager','support') ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, id ASC`).all();
+  res.json(rows);
+});
+
+router.post('/admin/team', requireOwner, (req, res) => {
+  const { username, password, name, role } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: 'Username and password are required' });
+  if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  if (!['manager', 'support'].includes(role)) return res.status(400).json({ error: 'Role must be manager or support' });
+  const clean = username.trim().toLowerCase();
+  if (db.prepare('SELECT id FROM users WHERE username=?').get(clean)) return res.status(409).json({ error: 'Username already taken' });
+  const hash = bcrypt.hashSync(password, 10);
+  const info = db.prepare('INSERT INTO users (username, password_hash, name, role, plan, plan_expires) VALUES (?,?,?,?,?,?)')
+    .run(clean, hash, (name || username).trim(), role, 'lifetime', '');
+  res.json(db.prepare('SELECT id, username, name, role, created_at FROM users WHERE id=?').get(info.lastInsertRowid));
+});
+
+router.post('/admin/team/:id/role', requireOwner, (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  if (user.role === 'owner') return res.status(400).json({ error: 'Cannot change the owner\'s role' });
+  const { role } = req.body || {};
+  if (!['manager', 'support'].includes(role)) return res.status(400).json({ error: 'Role must be manager or support' });
+  db.prepare('UPDATE users SET role=? WHERE id=?').run(role, user.id);
+  res.json({ ok: true });
+});
+
+router.delete('/admin/team/:id', requireOwner, (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
+  if (!user) return res.status(404).json({ error: 'Not found' });
+  if (user.role === 'owner') return res.status(400).json({ error: 'Owner account cannot be deleted' });
+  db.prepare('DELETE FROM users WHERE id=?').run(user.id);
+  res.json({ ok: true });
+});
+
+module.exports = { router, publicRouter, subscriptionGate, isExpired, saasConfig, addDays, notifyOwner, STAFF_ROLES };
