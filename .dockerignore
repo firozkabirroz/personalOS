@@ -1,0 +1,9 @@
+node_modules
+data
+.git
+.claude
+*.zip
+*.db
+*.db-shm
+*.db-wal
+.env

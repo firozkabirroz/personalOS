@@ -17,6 +17,8 @@ import settings from './views/settings.js';
 import finance from './views/finance.js';
 import debts from './views/debts.js';
 import invest from './views/invest.js';
+import billing from './views/billing.js';
+import admin from './views/admin.js';
 
 const root = document.getElementById('root');
 export let currentUser = null;
@@ -51,7 +53,11 @@ const NAV = [
     { route: 'ai', label: 'AI Assistant', icon: 'ai', view: ai },
   ]},
   { group: 'System', items: [
+    { route: 'billing', label: 'My Subscription', icon: 'card', view: billing },
     { route: 'settings', label: 'Settings', icon: 'settings', view: settings },
+  ]},
+  { group: 'Admin', ownerOnly: true, items: [
+    { route: 'admin', label: 'Admin Panel', icon: 'shield', view: admin },
   ]},
 ];
 
@@ -113,10 +119,11 @@ let mainEl = null;
 function shell() {
   root.innerHTML = '';
   const navButtons = {};
+  const isOwner = currentUser.role === 'owner';
 
   const sidebar = el('aside', { class: 'sidebar' },
     el('div', { class: 'side-logo' }, el('div', { class: 'mark' }, 'P'), el('span', {}, 'Personal OS')),
-    NAV.map(g => el('div', { class: 'nav-group' },
+    NAV.filter(g => !g.ownerOnly || isOwner).map(g => el('div', { class: 'nav-group' },
       el('div', { class: 'nav-label' }, g.group),
       g.items.map(item => {
         const b = el('button', { class: 'nav-item', onclick: () => navigate(item.route) },
@@ -167,6 +174,19 @@ function logout() {
   boot();
 }
 
+// ============ Lock screen (expired subscription) ============
+async function lockScreen() {
+  root.innerHTML = '';
+  const view = await billing({ lockMode: true });
+  const logoutBtn = el('button', { class: 'btn ghost', onclick: logout }, icon('logout'), 'Log out');
+  root.append(el('div', { class: 'auth-wrap', style: { alignItems: 'flex-start', overflowY: 'auto', padding: '40px 20px' } },
+    el('div', { style: { width: '100%', maxWidth: '720px' } },
+      el('div', { class: 'auth-logo', style: { justifyContent: 'center', marginBottom: '20px' } },
+        el('div', { class: 'mark' }, 'P'), el('h1', {}, 'Personal OS')),
+      view,
+      el('div', { style: { textAlign: 'center', marginTop: '20px' } }, logoutBtn))));
+}
+
 // ============ Boot ============
 async function boot() {
   if (!token()) {
@@ -180,6 +200,7 @@ async function boot() {
     const { hasUsers } = await api('/auth/status');
     return authScreen(hasUsers ? 'login' : 'register', hasUsers);
   }
+  if (currentUser.expired) return lockScreen();
   shell();
   renderRoute();
 }

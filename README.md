@@ -51,6 +51,25 @@ The assistant automatically receives a live snapshot of your tasks, projects, pl
 2. In Notion, share the pages you want with that integration (… menu → Connections).
 3. Settings → Notion → paste the token → **Browse & import pages** (they land in Brainstorming).
 
+## Selling as a subscription (SaaS)
+
+Personal OS is multi-tenant and ready to sell:
+
+- **The first account ever created becomes the OWNER** (admin, lifetime access). Create yours right after deploying.
+- **Every later sign-up is a customer** with a free trial (default 7 days), then their app locks until they pay.
+- **Admin Panel** (owner only, in the sidebar): total customers, active vs expired, monthly & total revenue, customers expiring soon.
+  - **Payments tab:** customers submit a Transaction ID after paying (bKash/Nagad/etc.); you approve or reject with one click. Approving extends their access automatically (added on top of any time left).
+  - **Users tab:** extend +1 month / +1 year, give lifetime, lock, or delete any customer.
+  - **Settings tab:** set monthly/yearly price, currency, trial length, and the payment instructions shown to customers.
+- **Expired customers** see a renewal screen (plan + payment form) instead of the app — they can pay but not use features until approved.
+- New sign-ups and submitted payments **ping your Telegram** instantly (if configured).
+
+Pricing and payment are **manual by design** (no payment gateway needed) — perfect for bKash/Nagad markets. Customers pay you directly and submit the TrxID; you approve from the Admin Panel.
+
+Hosting guides:
+- **[HOSTING.md](HOSTING.md)** — Oracle Cloud (always-free VM)
+- **[AWS-HOSTING.md](AWS-HOSTING.md)** — AWS EC2 (Ubuntu, free-tier eligible)
+
 ## Notes
 
 - Port: set the `PORT` environment variable to change from 4321 (remember to update the Google redirect URI).
