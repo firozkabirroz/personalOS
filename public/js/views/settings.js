@@ -45,15 +45,10 @@ export default async function settingsView() {
   } }, 'Test connection');
 
   // ---------- Google section ----------
-  const gClientId = el('input', { placeholder: 'xxxxx.apps.googleusercontent.com' }); gClientId.value = s.google_client_id || '';
-  const gSecret = el('input', { type: 'password', placeholder: s.google_client_secret_set ? `Saved: ${s.google_client_secret}` : 'Client secret' });
   const gStatus = el('span', { class: `badge ${s.google_connected ? 'green' : ''}` }, s.google_connected ? '● Connected' : 'Not connected');
 
   const connectGoogle = el('button', { class: 'btn ghost', onclick: async () => {
     try {
-      const body = { google_client_id: gClientId.value.trim() };
-      if (gSecret.value.trim()) body.google_client_secret = gSecret.value.trim();
-      await post('/settings', body);
       const { url, redirect_uri } = await get('/google/auth-url');
       navigator.clipboard?.writeText(redirect_uri).catch(() => {});
       window.open(url, '_blank', 'width=520,height=640');
@@ -99,22 +94,40 @@ export default async function settingsView() {
   } }, icon('download'), 'Browse & import pages');
 
   // ---------- Telegram section ----------
+  const tgStatus = el('span', { class: `badge ${s.telegram_connected ? 'green' : ''}` }, s.telegram_connected ? '● Connected' : 'Not connected');
   const tgToken = el('input', { type: 'password', placeholder: s.telegram_bot_token_set ? `Saved: ${s.telegram_bot_token}` : '123456:ABC-xxxx (from @BotFather)' });
-  const tgChat = el('input', { placeholder: 'Your chat ID (from @userinfobot)' }); tgChat.value = s.telegram_chat_id || '';
   const tgTz = el('input', { placeholder: 'Asia/Dhaka' }); tgTz.value = s.timezone || 'Asia/Dhaka';
-  const tgAi = el('select', {},
-    el('option', { value: 'off', selected: (s.telegram_ai_reports || 'off') === 'off' }, 'Off'),
-    el('option', { value: 'on', selected: s.telegram_ai_reports === 'on' }, 'On — send every AI answer to Telegram'));
 
-  const saveTg = el('button', { class: 'btn', onclick: async () => {
-    const body = { telegram_chat_id: tgChat.value.trim(), timezone: tgTz.value.trim() || 'Asia/Dhaka', telegram_ai_reports: tgAi.value };
-    if (tgToken.value.trim()) body.telegram_bot_token = tgToken.value.trim();
-    await post('/settings', body);
-    toast('Telegram settings saved ✓');
-    s = await get('/settings');
-    tgToken.value = '';
-    tgToken.placeholder = s.telegram_bot_token_set ? `Saved: ${s.telegram_bot_token}` : '123456:ABC-xxxx (from @BotFather)';
-  } }, 'Save Telegram settings');
+  const connectTg = el('button', { class: 'btn ghost', onclick: async () => {
+    try {
+      if (tgToken.value.trim()) await post('/settings', { telegram_bot_token: tgToken.value.trim() });
+      const { url } = await post('/telegram/link-start');
+      window.open(url, '_blank');
+      toast('Tap Start in the chat that just opened — waiting…');
+      connectTg.disabled = true;
+      const startedAt = Date.now();
+      const poll = setInterval(async () => {
+        const fresh = await get('/settings');
+        if (fresh.telegram_connected || Date.now() - startedAt > 90000) {
+          clearInterval(poll);
+          connectTg.disabled = false;
+          if (fresh.telegram_connected) { toast('Telegram connected ✓'); location.reload(); }
+          else toast('Still not connected — make sure you tapped Start, then try again', 'err');
+        }
+      }, 3000);
+    } catch (e) { toast(e.message, 'err'); }
+  } }, icon('link'), 'Save & Connect');
+
+  const disconnectTg = el('button', { class: 'btn danger sm', style: { display: s.telegram_connected ? 'inline-flex' : 'none' }, onclick: async () => {
+    await del('/settings/telegram_chat_id');
+    toast('Telegram disconnected');
+    location.reload();
+  } }, 'Disconnect');
+
+  const saveTz = el('button', { class: 'btn ghost sm', onclick: async () => {
+    await post('/settings', { timezone: tgTz.value.trim() || 'Asia/Dhaka' });
+    toast('Timezone saved ✓');
+  } }, 'Save timezone');
 
   const testTg = el('button', { class: 'btn ghost', onclick: async () => {
     testTg.disabled = true;
@@ -122,6 +135,16 @@ export default async function settingsView() {
     catch (e) { toast(e.message, 'err'); }
     testTg.disabled = false;
   } }, 'Send test message');
+
+  // Notification preferences — morning/night/finance/payment defaulted ON historically (always sent);
+  // telegram_ai_reports defaulted OFF (opt-in) — preserve both defaults for existing users.
+  const notifOptions = (key, label, defaultOn = true) => {
+    const val = defaultOn ? (s[key] === 'off' ? 'off' : 'on') : (s[key] === 'on' ? 'on' : 'off');
+    return el('div', { class: 'field' }, el('label', {}, label),
+      el('select', { onchange: async (e) => { await post('/settings', { [key]: e.target.value }); toast('Saved ✓'); } },
+        el('option', { value: 'on', selected: val === 'on' }, 'On'),
+        el('option', { value: 'off', selected: val === 'off' }, 'Off')));
+  };
 
   // ---------- General ----------
   const currency = el('input', { placeholder: '$, ৳, €, BDT …', style: { maxWidth: '120px' } }); currency.value = s.currency || '$';
@@ -158,19 +181,21 @@ export default async function settingsView() {
         baseUrlField,
         el('div', { style: { display: 'flex', gap: '10px' } }, saveAI, testAI)),
 
-      section('📅 Google Calendar & Drive', 'Create an OAuth client (Web application) in Google Cloud Console. Add the redirect URI shown after clicking Connect (it is copied to your clipboard automatically).',
-        el('div', { class: 'field' }, el('label', {}, 'OAuth Client ID'), gClientId),
-        el('div', { class: 'field' }, el('label', {}, 'OAuth Client Secret'), gSecret),
-        el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center' } }, connectGoogle, gStatus, disconnectGoogle),
-        el('p', { class: 'muted', style: { marginTop: '10px' } },
-          `Redirect URI to whitelist: ${location.origin}/api/google/callback`)),
+      section('📅 Google Calendar & Drive', 'One click — no setup needed on your end.',
+        el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center' } }, connectGoogle, gStatus, disconnectGoogle)),
 
-      section('📨 Telegram Bot', 'Create a bot with @BotFather in Telegram, copy its token, then get your chat ID from @userinfobot. You will receive: ☀️ 10:00 running projects, 🌙 22:00 progress report, 📊 monthly finance report on the 1st — in your timezone.',
+      section('📨 Telegram notifications', 'Create a bot with @BotFather (takes 30 seconds), paste its token below, then tap Save & Connect — no need to look up a chat ID, we detect it automatically.',
         el('div', { class: 'field' }, el('label', {}, 'Bot token'), tgToken),
-        el('div', { class: 'field' }, el('label', {}, 'Chat ID'), tgChat),
+        el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', margin: '10px 0 14px' } }, connectTg, tgStatus, disconnectTg),
         el('div', { class: 'field' }, el('label', {}, 'Timezone'), tgTz),
-        el('div', { class: 'field' }, el('label', {}, 'AI task reports'), tgAi),
-        el('div', { style: { display: 'flex', gap: '10px' } }, saveTg, testTg)),
+        saveTz,
+        el('div', { class: 'divider', style: { margin: '14px 0' } }),
+        notifOptions('notif_morning', '☀️ Morning report (10:00) — running projects'),
+        notifOptions('notif_night', '🌙 Night report (22:00) — daily progress'),
+        notifOptions('notif_finance', '📊 Monthly finance report (1st of month)'),
+        notifOptions('notif_payment', '💳 Payment status updates'),
+        notifOptions('telegram_ai_reports', '🤖 AI task reports — every AI answer', false),
+        el('div', { style: { marginTop: '10px' } }, testTg)),
 
       section('📓 Notion Import', 'Create an internal integration at notion.so/my-integrations, share your pages with it, then import them as brainstorming notes.',
         el('div', { class: 'field' }, el('label', {}, 'Integration token'), notionToken),

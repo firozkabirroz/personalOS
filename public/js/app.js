@@ -18,9 +18,7 @@ import finance from './views/finance.js';
 import debts from './views/debts.js';
 import invest from './views/invest.js';
 import billing from './views/billing.js';
-import admin from './views/admin.js';
 import support from './views/support.js';
-import team from './views/team.js';
 
 const root = document.getElementById('root');
 export let currentUser = null;
@@ -65,12 +63,6 @@ const NAV = [
     { route: 'billing', label: 'My Subscription', icon: 'card', roles: ['user'], view: billing },
     { route: 'settings', label: 'Settings', icon: 'settings', view: settings },
   ]},
-  { group: 'Admin', roles: ['owner', 'manager'], items: [
-    { route: 'admin', label: 'Admin Panel', icon: 'shield', view: admin },
-  ]},
-  { group: 'Team', roles: ['owner'], items: [
-    { route: 'team', label: 'Team', icon: 'team', view: team },
-  ]},
 ];
 
 const ROUTES = {};
@@ -81,17 +73,18 @@ function allowed(entry, role) {
 }
 
 // Where each role lands after login / on an empty hash
+// Staff (owner/manager/support) now do their day-to-day work at the standalone
+// /admin panel — this shell only has Support + Settings left for them.
 function defaultRoute(role) {
-  if (role === 'support') return 'support';
-  if (role === 'manager') return 'admin';
+  if (role === 'support' || role === 'manager') return 'support';
   return 'dashboard';
 }
 
 // ============ Auth screens ============
-function authScreen(mode, hasUsers) {
+function authScreen(mode, hasUsers, prefillError) {
   root.innerHTML = '';
   const isLogin = mode === 'login';
-  const err = el('div', { class: 'auth-error', style: { display: 'none' } });
+  const err = el('div', { class: 'auth-error', style: { display: prefillError ? 'block' : 'none' } }, prefillError || '');
   const username = el('input', { type: 'text', placeholder: 'Your username', autocomplete: 'username' });
   const name = el('input', { type: 'text', placeholder: 'How should we call you?' });
   const password = el('input', { type: 'password', placeholder: isLogin ? 'Your password' : 'At least 6 characters', autocomplete: isLogin ? 'current-password' : 'new-password' });
@@ -116,12 +109,16 @@ function authScreen(mode, hasUsers) {
     isLogin ? 'Sign in' : 'Create account');
   [username, password, name].forEach(i => i.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); }));
 
+  const googleBtn = el('a', { href: '/api/auth/google/start', class: 'btn ghost', style: { width: '100%', justifyContent: 'center', padding: '11px' } }, '🔵 Continue with Google');
+
   root.append(el('div', { class: 'auth-wrap' },
     el('div', { class: 'auth-card' },
       el('div', { class: 'auth-logo' }, el('div', { class: 'mark' }, 'P'), el('h1', {}, 'Personal OS')),
       el('p', { class: 'auth-sub' }, isLogin ? 'Welcome back. Sign in to your dashboard.' :
         (hasUsers ? 'Create a new account.' : 'Set up your account to get started.')),
       err,
+      googleBtn,
+      el('div', { class: 'auth-divider' }, 'or'),
       !isLogin && el('div', { class: 'field' }, el('label', {}, 'Display name'), name),
       el('div', { class: 'field' }, el('label', {}, 'Username'), username),
       el('div', { class: 'field' }, el('label', {}, 'Password'), password),
@@ -158,6 +155,9 @@ function shell() {
           return b;
         }),
       )),
+    ['owner', 'manager', 'support'].includes(role) ? el('div', { class: 'nav-group' },
+      el('div', { class: 'nav-label' }, 'Staff'),
+      el('a', { class: 'nav-item', href: '/admin', target: '_blank', rel: 'noopener' }, icon('shield'), el('span', {}, 'Admin Panel'))) : null,
     el('div', { class: 'side-footer' },
       el('div', { class: 'side-user' },
         el('div', { class: 'avatar' }, (currentUser.name || currentUser.username || '?')[0].toUpperCase()),
@@ -217,11 +217,22 @@ async function lockScreen() {
 
 // ============ Boot ============
 async function boot() {
+  // Google login redirects back here with ?glogin=<token> or ?gerror=<message>
+  const qs = new URLSearchParams(location.search);
+  const glogin = qs.get('glogin');
+  const gerror = qs.get('gerror');
+  if (glogin || gerror) {
+    qs.delete('glogin'); qs.delete('gerror');
+    const rest = qs.toString();
+    history.replaceState({}, '', location.pathname + (rest ? '?' + rest : ''));
+    if (glogin) setToken(glogin);
+  }
+
   if (!token()) {
     const { hasUsers } = await api('/auth/status');
     // landing page "Start free trial" links here with ?signup=1 to skip straight to registration
     const forceSignup = new URLSearchParams(location.search).get('signup') === '1';
-    return authScreen(forceSignup || !hasUsers ? 'register' : 'login', hasUsers);
+    return authScreen(forceSignup || !hasUsers ? 'register' : 'login', hasUsers, gerror || null);
   }
   try {
     const { user } = await api('/auth/me');

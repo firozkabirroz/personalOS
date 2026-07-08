@@ -1,11 +1,13 @@
 const express = require('express');
 const { db, getSetting, setSetting } = require('./db');
+const { logActivity } = require('./platform');
 
 // ============ Sending ============
 async function send(uid, text) {
   const token = getSetting(uid, 'telegram_bot_token');
   const chat = getSetting(uid, 'telegram_chat_id');
-  if (!token || !chat) throw new Error('Telegram is not configured. Add your bot token and chat ID in Settings.');
+  if (!token) throw new Error('Telegram is not configured. Add your bot token in Settings.');
+  if (!chat) throw new Error('Telegram is not connected yet. Go to Settings and tap Connect.');
   const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -18,6 +20,60 @@ async function send(uid, text) {
   });
   const data = await resp.json().catch(() => ({}));
   if (!data.ok) throw new Error('Telegram: ' + (data.description || `send failed (${resp.status})`));
+}
+
+async function sendRaw(token, chatId, text) {
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 4000) }),
+    });
+  } catch {}
+}
+
+// ============ One-click connect — each user has their own bot (from @BotFather),
+// but we still auto-detect their chat ID so they don't need @userinfobot: after
+// they save their token and tap Connect, we briefly poll THEIR bot's getUpdates
+// for the /start message and grab chat.id from it. ============
+const activePolls = new Map(); // userId -> { token, offset, until }
+
+async function linkStart(uid) {
+  const token = getSetting(uid, 'telegram_bot_token');
+  if (!token) throw new Error('Save your bot token first, then tap Connect.');
+  await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`).catch(() => {});
+  const meResp = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+  const me = await meResp.json();
+  if (!me.ok) throw new Error('Invalid bot token: ' + (me.description || 'unknown error'));
+
+  activePolls.set(uid, { token, offset: 0, until: Date.now() + 90 * 1000 });
+  pollUserBot(uid);
+  return { url: `https://t.me/${me.result.username}?start=connect` };
+}
+
+async function pollUserBot(uid) {
+  const state = activePolls.get(uid);
+  if (!state) return;
+  if (Date.now() > state.until) { activePolls.delete(uid); return; }
+  try {
+    const resp = await fetch(`https://api.telegram.org/bot${state.token}/getUpdates?timeout=15&offset=${state.offset}`);
+    const data = await resp.json();
+    if (data.ok) {
+      for (const upd of data.result || []) {
+        state.offset = upd.update_id + 1;
+        if (upd.message?.chat?.id) {
+          setSetting(uid, 'telegram_chat_id', String(upd.message.chat.id));
+          logActivity({ userId: uid, type: 'telegram_connected', message: 'Connected Telegram notifications' });
+          await sendRaw(state.token, upd.message.chat.id, '✅ Telegram connected! You will now receive your Personal OS notifications here.');
+          activePolls.delete(uid);
+          return;
+        }
+      }
+    }
+  } catch (e) {
+    console.error(`Telegram connect poll (user ${uid}):`, e.message);
+  }
+  setTimeout(() => pollUserBot(uid), 500);
 }
 
 function escapeHtml(s) {
@@ -123,23 +179,27 @@ function localNow(tz) {
   }
 }
 
+function prefOn(uid, key) {
+  return (getSetting(uid, key) || 'on') === 'on';
+}
+
 async function tick() {
   const users = db.prepare(`SELECT DISTINCT user_id FROM settings WHERE key='telegram_bot_token' AND value != ''`).all();
   for (const { user_id: uid } of users) {
     if (!getSetting(uid, 'telegram_chat_id')) continue;
     const now = localNow(getSetting(uid, 'timezone') || 'Asia/Dhaka');
     try {
-      if (now.hour >= 10 && getSetting(uid, 'tg_last_morning') !== now.date) {
+      if (now.hour >= 10 && prefOn(uid, 'notif_morning') && getSetting(uid, 'tg_last_morning') !== now.date) {
         setSetting(uid, 'tg_last_morning', now.date);
         await send(uid, morningReport(uid, now.date));
       }
-      if (now.hour >= 22 && getSetting(uid, 'tg_last_night') !== now.date) {
+      if (now.hour >= 22 && prefOn(uid, 'notif_night') && getSetting(uid, 'tg_last_night') !== now.date) {
         setSetting(uid, 'tg_last_night', now.date);
         await send(uid, nightReport(uid, now.date));
       }
       // Monthly finance report: 1st day of month at/after 10:00, covering previous month
       const thisMonth = now.date.slice(0, 7);
-      if (now.day === '01' && now.hour >= 10 && getSetting(uid, 'tg_last_finance') !== thisMonth) {
+      if (now.day === '01' && now.hour >= 10 && prefOn(uid, 'notif_finance') && getSetting(uid, 'tg_last_finance') !== thisMonth) {
         setSetting(uid, 'tg_last_finance', thisMonth);
         const prev = new Date(thisMonth + '-01T00:00:00');
         prev.setMonth(prev.getMonth() - 1);
@@ -158,6 +218,12 @@ function startScheduler() {
 
 // ============ Routes ============
 const router = express.Router();
+
+router.post('/telegram/link-start', async (req, res) => {
+  try {
+    res.json(await linkStart(req.userId));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
 
 router.post('/telegram/test', async (req, res) => {
   try {
