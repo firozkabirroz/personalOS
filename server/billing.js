@@ -1,13 +1,9 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { db, getSetting, setSetting } = require('./db');
+const { ownerId, mask, logActivity } = require('./platform');
 
 const STAFF_ROLES = ['owner', 'manager', 'support'];
-
-// ============ Helpers ============
-function ownerId() {
-  return db.prepare("SELECT id FROM users WHERE role='owner' ORDER BY id ASC LIMIT 1").get()?.id || null;
-}
 
 const CONFIG_DEFAULTS = {
   saas_trial_days: '7',
@@ -18,12 +14,6 @@ const CONFIG_DEFAULTS = {
 // AI provider keys used platform-wide (one key covers every model of that
 // provider in the ai_models catalog). Masked like a normal secret setting.
 const AI_KEY_FIELDS = ['admin_anthropic_key', 'admin_openai_key', 'admin_custom_key', 'admin_custom_base_url'];
-
-function mask(value) {
-  if (!value) return '';
-  if (value.length <= 8) return '••••';
-  return value.slice(0, 4) + '••••••••' + value.slice(-4);
-}
 
 function getPlans({ activeOnly = false } = {}) {
   let sql = `SELECT p.*, m.name AS model_name, m.provider AS model_provider, m.model_id AS model_ref
@@ -157,8 +147,19 @@ router.post('/billing/submit', (req, res) => {
     VALUES (?,?,?,?,?,?,?)`).run(req.userId, cycle, months, amount, (method || 'bKash').trim(), trx_id.trim(), plan.key);
   const user = db.prepare('SELECT username FROM users WHERE id=?').get(req.userId);
   notifyOwner(`💳 <b>New payment submitted</b>\nUser: ${user.username}\nPlan: ${plan.name} / ${cycle} (${months} months) — ${cfg.saas_currency}${amount}\nTrxID: <code>${trx_id.trim()}</code>\n\nApprove it from the Admin Panel.`);
+  logActivity({ userId: req.userId, type: 'payment_submitted', message: `${user.username} submitted ${plan.name} / ${cycle} — ${cfg.saas_currency}${amount}` });
   res.json(db.prepare('SELECT * FROM payments WHERE id=?').get(info.lastInsertRowid));
 });
+
+// Ping the customer on Telegram about a payment decision, respecting their notification preference
+function notifyCustomerPayment(userId, text) {
+  const prefOn = (getSetting(userId, 'notif_payment') || 'on') === 'on';
+  if (!prefOn || !getSetting(userId, 'telegram_chat_id')) return;
+  try {
+    const { send } = require('./telegram');
+    send(userId, text).catch(() => {});
+  } catch {}
+}
 
 // ============ Admin routes (owner + manager) ============
 router.get('/admin/overview', requireAdmin, (req, res) => {
@@ -200,13 +201,19 @@ router.post('/admin/payments/:id/approve', requireAdmin, (req, res) => {
   const newExpiry = addMonths(user.plan_expires, p.months);
   db.prepare('UPDATE users SET plan=?, plan_expires=?, tier_key=? WHERE id=?').run(p.plan, newExpiry, p.tier_key || user.tier_key, user.id);
   db.prepare("UPDATE payments SET status='approved', decided_at=? WHERE id=?").run(todayStr(), p.id);
+  logActivity({ userId: user.id, type: 'payment_approved', message: `Payment approved for ${user.username}, valid until ${newExpiry}` });
+  notifyCustomerPayment(user.id, `✅ <b>Payment approved!</b>\nYour plan is now active until <b>${newExpiry}</b>. Thanks for subscribing!`);
   res.json({ ok: true, plan_expires: newExpiry });
 });
 
 router.post('/admin/payments/:id/reject', requireAdmin, (req, res) => {
-  const info = db.prepare("UPDATE payments SET status='rejected', note=?, decided_at=? WHERE id=? AND status='pending'")
-    .run((req.body?.note || '').slice(0, 300), todayStr(), req.params.id);
-  if (!info.changes) return res.status(404).json({ error: 'Pending payment not found' });
+  const p = db.prepare("SELECT * FROM payments WHERE id=? AND status='pending'").get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Pending payment not found' });
+  const note = (req.body?.note || '').slice(0, 300);
+  db.prepare("UPDATE payments SET status='rejected', note=?, decided_at=? WHERE id=?").run(note, todayStr(), p.id);
+  const user = db.prepare('SELECT username FROM users WHERE id=?').get(p.user_id);
+  logActivity({ userId: p.user_id, type: 'payment_rejected', message: `Payment rejected for ${user?.username || p.user_id}${note ? ': ' + note : ''}` });
+  notifyCustomerPayment(p.user_id, `❌ <b>Payment could not be approved</b>${note ? '\nReason: ' + note : ''}\nPlease check your transaction ID and resubmit, or contact support.`);
   res.json({ ok: true });
 });
 
@@ -219,14 +226,17 @@ router.post('/admin/users/:id/plan', requireAdmin, (req, res) => {
     const m = Number(months) || 1;
     const newExpiry = addMonths(user.plan_expires, m);
     db.prepare("UPDATE users SET plan=?, plan_expires=? WHERE id=?").run(m >= 12 ? 'yearly' : 'monthly', newExpiry, user.id);
+    logActivity({ userId: user.id, type: 'plan_changed', message: `${user.username} extended by admin, now valid until ${newExpiry}` });
     return res.json({ ok: true, plan_expires: newExpiry });
   }
   if (action === 'lifetime') {
     db.prepare("UPDATE users SET plan='lifetime', plan_expires='' WHERE id=?").run(user.id);
+    logActivity({ userId: user.id, type: 'plan_changed', message: `${user.username} set to lifetime by admin` });
     return res.json({ ok: true });
   }
   if (action === 'lock') {
     db.prepare("UPDATE users SET plan='expired', plan_expires=? WHERE id=?").run('2000-01-01', user.id);
+    logActivity({ userId: user.id, type: 'plan_changed', message: `${user.username} locked by admin` });
     return res.json({ ok: true });
   }
   res.status(400).json({ error: 'Unknown action' });
@@ -266,6 +276,7 @@ router.post('/admin/team', requireOwner, (req, res) => {
   const hash = bcrypt.hashSync(password, 10);
   const info = db.prepare('INSERT INTO users (username, password_hash, name, role, plan, plan_expires, tier_key) VALUES (?,?,?,?,?,?,?)')
     .run(clean, hash, (name || username).trim(), role, 'lifetime', '', 'business');
+  logActivity({ userId: info.lastInsertRowid, type: 'team_member_added', message: `${clean} added to team as ${role}` });
   res.json(db.prepare('SELECT id, username, name, role, created_at FROM users WHERE id=?').get(info.lastInsertRowid));
 });
 
@@ -383,4 +394,4 @@ router.delete('/admin/plans/:id', requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
-module.exports = { router, publicRouter, subscriptionGate, isExpired, saasConfig, addDays, notifyOwner, STAFF_ROLES, getPlans, getPlan };
+module.exports = { router, publicRouter, subscriptionGate, isExpired, saasConfig, addDays, notifyOwner, STAFF_ROLES, getPlans, getPlan, requireAdmin, requireOwner };

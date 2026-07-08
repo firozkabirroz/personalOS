@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { db, getSetting, setSetting } = require('./db');
+const { getPlatformSetting, logActivity } = require('./platform');
 const { UPLOAD_DIR } = require('./files');
 
 const router = express.Router();
@@ -17,8 +18,8 @@ function redirectUri(req) {
 }
 
 router.get('/google/auth-url', (req, res) => {
-  const clientId = getSetting(req.userId, 'google_client_id');
-  if (!clientId) return res.status(400).json({ error: 'Add your Google OAuth Client ID & Secret in Settings first.' });
+  const clientId = getPlatformSetting('platform_google_client_id');
+  if (!clientId) return res.status(400).json({ error: 'Google isn\'t set up by the admin yet. Ask them to configure it in Admin → Integrations.' });
   const url = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri(req),
@@ -36,8 +37,8 @@ router.get('/google/callback', async (req, res) => {
   const { code, state, error } = req.query;
   if (error || !code) return res.send(`<script>window.close()</script>Google authorization failed: ${error || 'no code'}`);
   const uid = parseInt(state, 10);
-  const clientId = getSetting(uid, 'google_client_id');
-  const clientSecret = getSetting(uid, 'google_client_secret');
+  const clientId = getPlatformSetting('platform_google_client_id');
+  const clientSecret = getPlatformSetting('platform_google_client_secret');
   try {
     const resp = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
@@ -51,6 +52,7 @@ router.get('/google/callback', async (req, res) => {
     if (!resp.ok) throw new Error(tokens.error_description || tokens.error);
     tokens.obtained_at = Date.now();
     setSetting(uid, 'google_tokens', JSON.stringify(tokens));
+    logActivity({ userId: uid, type: 'google_connected', message: 'Connected Google Calendar/Drive' });
     res.send('<body style="font-family:sans-serif;background:#0f1117;color:#e2e4ea;display:grid;place-items:center;height:100vh"><div><h2>✅ Google connected</h2><p>You can close this window and return to Personal OS.</p></div></body>');
   } catch (e) {
     res.send(`<body style="font-family:sans-serif"><h3>Google connection failed</h3><p>${e.message}</p></body>`);
@@ -68,8 +70,8 @@ async function googleToken(uid) {
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         refresh_token: tokens.refresh_token,
-        client_id: getSetting(uid, 'google_client_id'),
-        client_secret: getSetting(uid, 'google_client_secret'),
+        client_id: getPlatformSetting('platform_google_client_id'),
+        client_secret: getPlatformSetting('platform_google_client_secret'),
         grant_type: 'refresh_token',
       }),
     });

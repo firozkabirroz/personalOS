@@ -1,5 +1,6 @@
 const express = require('express');
 const { db } = require('./db');
+const { logActivity } = require('./platform');
 
 const STAFF_ROLES = ['owner', 'manager', 'support'];
 
@@ -39,6 +40,7 @@ router.post('/support/tickets', (req, res) => {
   db.prepare('INSERT INTO ticket_messages (ticket_id, sender_id, message) VALUES (?,?,?)').run(info.lastInsertRowid, req.userId, message.trim());
 
   const me = getUser(req.userId);
+  logActivity({ userId: req.userId, type: 'ticket_created', message: `${me.username} opened ticket: ${subject.trim()}` });
   const owner = db.prepare("SELECT id FROM users WHERE role='owner' LIMIT 1").get();
   if (owner && !isStaff(me.role)) {
     try {

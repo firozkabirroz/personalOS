@@ -282,6 +282,16 @@ CREATE TABLE IF NOT EXISTS ai_usage (
   message_count INTEGER DEFAULT 0,
   PRIMARY KEY (user_id, month)
 );
+
+CREATE TABLE IF NOT EXISTS activity_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  type TEXT NOT NULL,
+  message TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_activity_log_created ON activity_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id);
 `);
 
 // Migration: SaaS columns on users — role (owner|user), plan, expiry
@@ -310,6 +320,13 @@ if (!userCols.includes('tier_key')) {
 const paymentCols = db.prepare('PRAGMA table_info(payments)').all().map(c => c.name);
 if (!paymentCols.includes('tier_key')) db.exec("ALTER TABLE payments ADD COLUMN tier_key TEXT DEFAULT ''");
 
+// Migration: Google sign-in linkage + last-login tracking
+if (!userCols.includes('google_id')) {
+  db.exec("ALTER TABLE users ADD COLUMN google_id TEXT");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL");
+}
+if (!userCols.includes('last_login_at')) db.exec("ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT ''");
+
 // Seed default AI models + plan tiers once, based on real per-message cost research
 // (~3000 input + ~500 output tokens/message; BDT figures assume ~120 BDT/USD)
 if (!db.prepare('SELECT id FROM ai_models LIMIT 1').get()) {
@@ -336,4 +353,8 @@ function setSetting(userId, key, value) {
     ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value`).run(userId, key, String(value ?? ''));
 }
 
-module.exports = { db, getSetting, setSetting, DATA_DIR };
+function logActivity({ userId, type, message }) {
+  db.prepare('INSERT INTO activity_log (user_id, type, message) VALUES (?,?,?)').run(userId || null, type, message);
+}
+
+module.exports = { db, getSetting, setSetting, logActivity, DATA_DIR };

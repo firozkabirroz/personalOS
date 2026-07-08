@@ -4,13 +4,13 @@ const { db, getSetting, setSetting } = require('./db');
 const router = express.Router();
 
 // Keys whose values are secrets — never sent back to the client in full
-const SECRET_KEYS = ['ai_api_key', 'notion_token', 'google_client_secret', 'google_tokens', 'telegram_bot_token'];
+const SECRET_KEYS = ['ai_api_key', 'notion_token', 'google_tokens', 'telegram_bot_token'];
 
 const ALLOWED_KEYS = [
   'ai_provider', 'ai_api_key', 'ai_model', 'ai_base_url',
   'notion_token',
-  'google_client_id', 'google_client_secret',
   'telegram_bot_token', 'telegram_chat_id', 'telegram_ai_reports', 'timezone',
+  'notif_morning', 'notif_night', 'notif_finance', 'notif_payment',
   'currency', 'theme',
 ];
 
@@ -28,6 +28,7 @@ router.get('/settings', (req, res) => {
     out[r.key] = SECRET_KEYS.includes(r.key) ? mask(r.value) : r.value;
     if (SECRET_KEYS.includes(r.key)) out[r.key + '_set'] = !!r.value;
   }
+  out.telegram_connected = !!out.telegram_chat_id;
   res.json(out);
 });
 
