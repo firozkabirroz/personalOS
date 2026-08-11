@@ -19,16 +19,8 @@ export async function api(path, options = {}) {
     location.reload();
     throw new Error('Session expired');
   }
-  if (resp.status === 402) {
-    // Insufficient credits for a paid AI model — stay on page, let the view handle it
-    const err = new Error(data?.error || 'Not enough credits');
-    if (data?.needsCredits) err.needsCredits = true;
-    throw err;
-  }
   if (!resp.ok) {
     const err = new Error(data?.error || `Request failed (${resp.status})`);
-    if (data?.limitReached) err.limitReached = true;
-    if (data?.needsCredits) err.needsCredits = true;
     throw err;
   }
   return data;

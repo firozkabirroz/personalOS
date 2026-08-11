@@ -53,7 +53,7 @@ Vercel-এ প্রতিটা serverless instance-এর ডাটাবে�
 | Role | Username | Password | কোথায় |
 |---|---|---|---|
 | Admin (owner) | `admin` | `admin123` | `https://your-project.vercel.app/admin` |
-| User (100 credits) | `demo` | `demo123` | `https://your-project.vercel.app` |
+| User | `demo` | `demo123` | `https://your-project.vercel.app` |
 
 পাসওয়ার্ড বদলাতে চাইলে env variables দিন: `DEMO_ADMIN_PASSWORD`, `DEMO_USER_PASSWORD` (তারপর Redeploy)।
 

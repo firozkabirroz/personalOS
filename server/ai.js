@@ -3,7 +3,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { db, getSetting, getCredits, adjustCredits, DATA_DIR, logActivity } = require('./db');
+const { db, getSetting, DATA_DIR } = require('./db');
 
 const router = express.Router();
 
@@ -121,8 +121,7 @@ function ownerId() {
 }
 
 function listActiveModels() {
-  return db.prepare('SELECT id, name, provider, model_id, is_free, credit_cost, position FROM ai_models WHERE active=1 ORDER BY position ASC, id ASC').all()
-    .map(m => ({ ...m, is_free: !!m.is_free, credit_cost: m.is_free ? 0 : Math.max(1, Number(m.credit_cost) || 1) }));
+  return db.prepare('SELECT id, name, provider, model_id, position FROM ai_models WHERE active=1 ORDER BY position ASC, id ASC').all();
 }
 
 function resolveModel(modelDbId) {
@@ -130,18 +129,15 @@ function resolveModel(modelDbId) {
     const m = db.prepare('SELECT * FROM ai_models WHERE id=? AND active=1').get(modelDbId);
     if (m) return m;
   }
-  return db.prepare('SELECT * FROM ai_models WHERE active=1 AND is_free=1 ORDER BY position ASC LIMIT 1').get()
-    || db.prepare('SELECT * FROM ai_models WHERE active=1 ORDER BY position ASC LIMIT 1').get();
+  return db.prepare('SELECT * FROM ai_models WHERE active=1 ORDER BY position ASC LIMIT 1').get();
 }
 
-/** Resolve platform key + model for a chat. Debits credits for paid models (customers only). */
-function resolveAIRoute(uid, role, modelDbId) {
+/** Resolve platform key + model for a chat — everything is free for everyone. */
+function resolveAIRoute(modelDbId) {
   const oid = ownerId();
   const model = resolveModel(modelDbId);
   if (!model) return { error: 'No AI model is available. Ask the admin to add one in Admin → AI Models.' };
 
-  const isFree = !!model.is_free;
-  const creditCost = isFree ? 0 : Math.max(1, Number(model.credit_cost) || 1);
   const apiKey = oid ? getSetting(oid, `admin_${model.provider}_key`) : '';
   const baseUrl = model.provider === 'custom' && oid ? getSetting(oid, 'admin_custom_base_url') : '';
 
@@ -149,30 +145,7 @@ function resolveAIRoute(uid, role, modelDbId) {
     return { error: `AI service সাময়িকভাবে বন্ধ আছে — admin কে "${model.provider}" key যোগ করতে বলুন।` };
   }
 
-  // Staff: unlimited, no credit debit
-  if (role !== 'user') {
-    return {
-      provider: model.provider, apiKey, model: model.model_id, baseUrl,
-      modelRow: model, viaPlatform: false, creditCost: 0, isFree: true,
-    };
-  }
-
-  if (!isFree) {
-    const balance = getCredits(uid);
-    if (balance < creditCost) {
-      return {
-        error: `এই মডেল (${model.name}) ব্যবহার করতে ${creditCost} ক্রেডিট লাগে — আপনার ব্যালেন্স ${balance}। Credits পেজ থেকে কিনুন, অথবা একটি Free মডেল বেছে নিন।`,
-        needsCredits: true,
-        creditCost,
-        balance,
-      };
-    }
-  }
-
-  return {
-    provider: model.provider, apiKey, model: model.model_id, baseUrl,
-    modelRow: model, viaPlatform: true, creditCost, isFree,
-  };
+  return { provider: model.provider, apiKey, model: model.model_id, baseUrl, modelRow: model };
 }
 
 function fileToContentPart(file) {
@@ -265,10 +238,7 @@ async function callOpenAI({ apiKey, model, baseUrl, system, messages, userConten
 }
 
 router.get('/ai/models', (req, res) => {
-  const models = listActiveModels();
-  const credits = getCredits(req.userId);
-  const user = db.prepare('SELECT role FROM users WHERE id=?').get(req.userId);
-  res.json({ models, credits, unlimited: user?.role !== 'user' });
+  res.json({ models: listActiveModels() });
 });
 
 router.get('/ai/history', (req, res) => {
@@ -281,17 +251,7 @@ router.delete('/ai/history', (req, res) => {
 });
 
 router.get('/ai/usage', (req, res) => {
-  const user = db.prepare('SELECT role, credits FROM users WHERE id=?').get(req.userId);
-  const models = listActiveModels();
-  if (user.role !== 'user') {
-    return res.json({ unlimited: true, credits: user.credits || 0, models });
-  }
-  res.json({
-    unlimited: false,
-    credits: user.credits || 0,
-    models,
-    freeModels: models.filter(m => m.is_free).length,
-  });
+  res.json({ unlimited: true, models: listActiveModels() });
 });
 
 router.post('/ai/chat', (req, res, next) => {
@@ -306,17 +266,10 @@ router.post('/ai/chat', (req, res, next) => {
   if (!message && !(req.files || []).length) return res.status(400).json({ error: 'Message is empty' });
 
   const user = db.prepare('SELECT id, name, username, role FROM users WHERE id=?').get(uid);
-  const route = resolveAIRoute(uid, user.role, modelDbId);
-  if (route.error) {
-    return res.status(route.needsCredits ? 402 : 400).json({
-      error: route.error,
-      needsCredits: !!route.needsCredits,
-      creditCost: route.creditCost,
-      balance: route.balance,
-    });
-  }
+  const route = resolveAIRoute(modelDbId);
+  if (route.error) return res.status(400).json({ error: route.error });
 
-  const { provider, apiKey, model, baseUrl, modelRow, viaPlatform, creditCost, isFree } = route;
+  const { provider, apiKey, model, baseUrl, modelRow } = route;
   const files = req.files || [];
   const parts = files.map(fileToContentPart);
   const userContent = buildUserContent(message || '(see attached files)', parts);
@@ -343,15 +296,6 @@ ${context || '(No data yet — the user has not added anything.)'}
     if (provider === 'anthropic') reply = await callAnthropic({ apiKey, model, system, messages, userContent: contentArg });
     else reply = await callOpenAI({ apiKey, model, baseUrl: provider === 'custom' ? baseUrl : '', system, messages, userContent: contentArg });
 
-    let newBalance = getCredits(uid);
-    if (viaPlatform && !isFree && creditCost > 0) {
-      newBalance = adjustCredits(uid, -creditCost, {
-        reason: `AI chat · ${modelRow.name}`,
-        refType: 'ai_chat',
-      });
-      logActivity({ userId: uid, type: 'ai_chat', message: `${user.username} used ${modelRow.name} (−${creditCost} credits)` });
-    }
-
     const displayMsg = message || '(attachment)';
     db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments) VALUES (?,?,?,?,?)')
       .run(uid, 'user', displayMsg, modelRow.id, attachmentMeta);
@@ -364,12 +308,7 @@ ${context || '(No data yet — the user has not added anything.)'}
         .catch(e => console.error('Telegram AI forward:', e.message));
     }
 
-    res.json({
-      reply,
-      model: { id: modelRow.id, name: modelRow.name, is_free: isFree, credit_cost: creditCost },
-      credits: newBalance,
-      charged: isFree ? 0 : creditCost,
-    });
+    res.json({ reply, model: { id: modelRow.id, name: modelRow.name } });
   } catch (e) {
     // clean up uploaded files on failure
     for (const f of files) {
@@ -381,5 +320,4 @@ ${context || '(No data yet — the user has not added anything.)'}
 
 module.exports = router;
 module.exports.router = router;
-module.exports.getCredits = getCredits;
 module.exports.listActiveModels = listActiveModels;

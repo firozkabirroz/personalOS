@@ -17,7 +17,6 @@ import settings from './views/settings.js';
 import finance from './views/finance.js';
 import debts from './views/debts.js';
 import invest from './views/invest.js';
-import billing from './views/billing.js';
 import support from './views/support.js';
 
 const root = document.getElementById('root');
@@ -60,7 +59,6 @@ const NAV = [
     { route: 'support', label: 'Support', icon: 'ticket', view: support },
   ]},
   { group: 'System', items: [
-    { route: 'billing', label: 'Credits', icon: 'card', roles: ['user'], view: billing },
     { route: 'settings', label: 'Settings', icon: 'settings', view: settings },
   ]},
 ];
@@ -159,12 +157,6 @@ function shell() {
       el('div', { class: 'nav-label' }, 'Staff'),
       el('a', { class: 'nav-item', href: '/admin', target: '_blank', rel: 'noopener' }, icon('shield'), el('span', {}, 'Admin Panel'))) : null,
     el('div', { class: 'side-footer' },
-      role === 'user' ? (() => {
-        const chip = el('div', { class: 'credits-chip', title: 'Buy credits', onclick: () => navigate('billing') },
-          icon('zap'), el('b', {}, String(currentUser.credits ?? 0)),
-          el('span', { class: 'lbl' }, 'credits'));
-        return chip;
-      })() : null,
       el('div', { class: 'side-user' },
         el('div', { class: 'avatar' }, (currentUser.name || currentUser.username || '?')[0].toUpperCase()),
         el('div', { class: 'who' }, el('b', {}, currentUser.name || currentUser.username), el('span', {}, '@' + currentUser.username)),
