@@ -8,13 +8,24 @@ const { db, DATA_DIR } = require('./db');
 const { getPlatformSetting, logActivity } = require('./platform');
 
 // Persistent JWT secret so sessions survive server restarts.
-// On serverless hosts (Vercel) set the JWT_SECRET env var instead — the
-// filesystem there is ephemeral, so a file-based secret would rotate on
-// every cold start and log everyone out.
+// On serverless hosts (Vercel) set the JWT_SECRET env var — the filesystem
+// there is ephemeral AND every instance has its own /tmp, so a file-based
+// secret differs per instance and constantly logs users out. If the env var
+// is missing on Vercel, fall back to a secret derived from the deployment's
+// commit SHA: identical across all instances of one deployment, so sessions
+// hold. It's weaker than a real secret — the guide tells users to set one.
 const SECRET_FILE = path.join(DATA_DIR, '.jwt-secret');
 let JWT_SECRET;
 if (process.env.JWT_SECRET) {
   JWT_SECRET = process.env.JWT_SECRET;
+} else if (process.env.VERCEL) {
+  const seed = [
+    process.env.VERCEL_GIT_COMMIT_SHA || '',
+    process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || '',
+    'personal-os-jwt',
+  ].join('|');
+  JWT_SECRET = crypto.createHash('sha256').update(seed).digest('hex');
+  console.warn('JWT_SECRET env var is not set — using a deployment-derived fallback. Set JWT_SECRET in Vercel project settings for real security.');
 } else if (fs.existsSync(SECRET_FILE)) {
   JWT_SECRET = fs.readFileSync(SECRET_FILE, 'utf8');
 } else {

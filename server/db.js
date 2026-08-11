@@ -407,6 +407,23 @@ if (!db.prepare('SELECT id FROM credit_packs LIMIT 1').get()) {
   insPack.run('pro', 'Pro Pack', 400, 600, 3);
 }
 
+// Demo account seeding for ephemeral hosts (Vercel) or when SEED_DEMO=1.
+// On serverless each instance boots a fresh /tmp database, so an account you
+// registered on one instance doesn't exist on the next — logins look "invalid".
+// Seeding the same known accounts on every cold start keeps login working.
+if (process.env.SEED_DEMO === '1' || process.env.VERCEL) {
+  if (!db.prepare('SELECT id FROM users LIMIT 1').get()) {
+    const bcrypt = require('bcryptjs');
+    const adminPass = process.env.DEMO_ADMIN_PASSWORD || 'admin123';
+    const demoPass = process.env.DEMO_USER_PASSWORD || 'demo123';
+    db.prepare(`INSERT INTO users (username, password_hash, name, role, plan, plan_expires, tier_key, credits)
+      VALUES ('admin', ?, 'Admin', 'owner', 'lifetime', '', 'business', 0)`).run(bcrypt.hashSync(adminPass, 10));
+    db.prepare(`INSERT INTO users (username, password_hash, name, role, plan, plan_expires, tier_key, credits)
+      VALUES ('demo', ?, 'Demo User', 'user', 'lifetime', '', 'free', 100)`).run(bcrypt.hashSync(demoPass, 10));
+    console.log('Seeded demo accounts: admin / demo');
+  }
+}
+
 function getSetting(userId, key) {
   const row = db.prepare('SELECT value FROM settings WHERE user_id=? AND key=?').get(userId, key);
   return row ? row.value : '';
