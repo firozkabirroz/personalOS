@@ -90,6 +90,6 @@ export default async function usersView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, '👥 Users'), el('p', {}, 'All accounts are free — View to inspect data, chats & activity'))),
+      el('div', {}, el('h2', {}, 'Users'), el('p', {}, 'All accounts are free — View to inspect data, chats & activity'))),
     body);
 }

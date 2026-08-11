@@ -39,7 +39,7 @@ export default async function integrationsView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, '🔌 Integrations'), el('p', {}, 'Platform-wide credentials — users connect with one click'))),
+      el('div', {}, el('h2', {}, 'Integrations'), el('p', {}, 'Platform-wide credentials — users connect with one click'))),
 
     section('📅 Google OAuth', 'Create an OAuth client (Web application) in Google Cloud Console. Whitelist BOTH redirect URIs below. Users then get one-click Google login + Calendar/Drive.',
       el('div', { class: 'field' }, el('label', {}, 'OAuth Client ID'), gClientId),

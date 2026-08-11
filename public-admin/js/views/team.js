@@ -62,7 +62,7 @@ export default async function teamView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, '👥 Team'), el('p', {}, 'Admin staff — access varies by role')),
+      el('div', {}, el('h2', {}, 'Team'), el('p', {}, 'Admin staff — access varies by role')),
       el('div', { class: 'page-actions' }, el('button', { class: 'btn', onclick: addMember }, 'Add member'))),
     listEl,
     el('div', { class: 'card', style: { marginTop: '16px' } },

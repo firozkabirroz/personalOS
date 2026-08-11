@@ -106,7 +106,7 @@ export default async function supportView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, '🎫 Support inbox'), el('p', {}, 'Answer customer tickets')),
+      el('div', {}, el('h2', {}, 'Support inbox'), el('p', {}, 'Answer customer tickets')),
       el('div', { class: 'page-actions' }, tabs)),
     listEl);
 }

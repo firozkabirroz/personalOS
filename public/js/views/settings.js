@@ -123,8 +123,8 @@ export default async function settingsView() {
     } catch (e) { toast(e.message, 'err'); }
   } }, 'Change password');
 
-  const section = (title, desc, ...kids) => el('div', { class: 'card' },
-    el('h3', {}, title),
+  const section = (ic, title, desc, ...kids) => el('div', { class: 'card' },
+    el('h3', {}, icon(ic), title),
     desc ? el('p', { class: 'muted', style: { marginTop: '-8px', marginBottom: '14px' } }, desc) : null,
     ...kids);
 
@@ -133,13 +133,13 @@ export default async function settingsView() {
       el('div', {}, el('h2', {}, 'Settings'), el('p', {}, 'Just register and use — connect Google/Notion in one click if you want'))),
     el('div', { class: 'grid cols-2' },
 
-      section('📅 Google Calendar & Drive', 'One click — admin already set up the OAuth app. No API keys needed from you.',
+      section('calendar', 'Google Calendar & Drive', 'One click — admin already set up the OAuth app. No API keys needed from you.',
         el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' } }, connectGoogle, gStatus, disconnectGoogle)),
 
-      section('📓 Notion', 'One-click connect. Then import pages into Brainstorming.',
+      section('book', 'Notion', 'One-click connect. Then import pages into Brainstorming.',
         el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' } }, connectNotion, nStatus, disconnectNotion, importNotion)),
 
-      section('📨 Telegram notifications', 'Optional. Create a bot with @BotFather, paste its token, then tap Save & Connect.',
+      section('bell', 'Telegram notifications', 'Optional. Create a bot with @BotFather, paste its token, then tap Save & Connect.',
         el('div', { class: 'field' }, el('label', {}, 'Bot token'), tgToken),
         el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', margin: '10px 0 14px' } }, connectTg, tgStatus, disconnectTg),
         el('div', { class: 'field' }, el('label', {}, 'Timezone'), tgTz),
@@ -152,7 +152,7 @@ export default async function settingsView() {
         notifOptions('telegram_ai_reports', '🤖 AI task reports — every AI answer', false),
         el('div', { style: { marginTop: '10px' } }, testTg)),
 
-      section('⚙️ General', null,
+      section('settings', 'General', null,
         el('div', { class: 'field' }, el('label', {}, 'Currency symbol'), currency),
         saveGeneral,
         el('div', { class: 'divider', style: { margin: '16px 0' } }),

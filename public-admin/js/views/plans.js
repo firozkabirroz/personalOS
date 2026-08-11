@@ -54,6 +54,6 @@ export default async function plansView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, '💳 Credit Packs'), el('p', {}, 'Replace subscriptions — sell AI credits instead'))),
+      el('div', {}, el('h2', {}, 'Credit Packs'), el('p', {}, 'Replace subscriptions — sell AI credits instead'))),
     body);
 }

@@ -1,5 +1,5 @@
 import { api, post, setToken, token } from './api.js';
-import { el, icon, icons, toast } from './ui.js';
+import { el, icon, icons, toast, skeletonPage } from './ui.js';
 
 import dashboard from './views/dashboard.js';
 import tasks from './views/tasks.js';
@@ -159,6 +159,12 @@ function shell() {
       el('div', { class: 'nav-label' }, 'Staff'),
       el('a', { class: 'nav-item', href: '/admin', target: '_blank', rel: 'noopener' }, icon('shield'), el('span', {}, 'Admin Panel'))) : null,
     el('div', { class: 'side-footer' },
+      role === 'user' ? (() => {
+        const chip = el('div', { class: 'credits-chip', title: 'Buy credits', onclick: () => navigate('billing') },
+          icon('zap'), el('b', {}, String(currentUser.credits ?? 0)),
+          el('span', { class: 'lbl' }, 'credits'));
+        return chip;
+      })() : null,
       el('div', { class: 'side-user' },
         el('div', { class: 'avatar' }, (currentUser.name || currentUser.username || '?')[0].toUpperCase()),
         el('div', { class: 'who' }, el('b', {}, currentUser.name || currentUser.username), el('span', {}, '@' + currentUser.username)),
@@ -178,19 +184,27 @@ export function navigate(route) {
   location.hash = '#/' + route;
 }
 
+let routeToken = 0;
 async function renderRoute() {
   const fallback = defaultRoute(currentUser.role);
   const route = (location.hash.replace(/^#\//, '') || fallback).split('?')[0];
   const item = ROUTES[route] || ROUTES[fallback];
   const activeRoute = ROUTES[route] ? route : fallback;
   for (const [r, b] of Object.entries(shell.navButtons || {})) b.classList.toggle('active', r === activeRoute);
+  const myToken = ++routeToken;
   mainEl.innerHTML = '';
   mainEl.scrollTop = 0;
+  mainEl.append(skeletonPage());
   try {
     const view = await item.view();
+    if (myToken !== routeToken) return; // user navigated away while loading
+    view.classList.add('view-enter');
+    mainEl.innerHTML = '';
     mainEl.append(view);
   } catch (e) {
+    if (myToken !== routeToken) return;
     console.error(e);
+    mainEl.innerHTML = '';
     mainEl.append(el('div', { class: 'empty' }, el('div', { class: 'big' }, '⚠️'), 'Failed to load: ' + e.message));
   }
 }

@@ -50,13 +50,13 @@ export default async function aiModelsView() {
 
     body.replaceChildren(el('div', {},
       el('div', { class: 'card', style: { marginBottom: '16px' } },
-        el('h3', {}, '🔑 Platform AI keys'),
+        el('h3', {}, 'Platform AI keys'),
         el('p', { class: 'muted', style: { marginTop: '-8px', marginBottom: '14px' } }, 'One key per provider covers every model below — users never paste their own keys. Free models are unlimited; paid models debit user credits.'),
         el('div', { class: 'field-row' }, kAnthropic.el, kOpenai.el),
         el('div', { class: 'field-row' }, kCustom.el, kCustomUrl.el),
         saveKeys),
       el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' } },
-        el('h3', { style: { margin: 0 } }, '🤖 Model catalog'),
+        el('h3', { style: { margin: 0 } }, 'Model catalog'),
         el('button', { class: 'btn', onclick: addModel }, icon('plus'), 'Add model')),
       el('div', { class: 'grid cols-3' }, models.map(m => {
         const editBtn = el('button', { class: 'icon-btn', onclick: () => editModel(m) }); editBtn.innerHTML = icons.edit;
@@ -78,6 +78,6 @@ export default async function aiModelsView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, '🤖 AI Models'), el('p', {}, 'Platform keys + free/paid model catalog'))),
+      el('div', {}, el('h2', {}, 'AI Models'), el('p', {}, 'Platform keys + free/paid model catalog'))),
     body);
 }

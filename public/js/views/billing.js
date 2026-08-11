@@ -1,5 +1,5 @@
 import { get, post } from '../api.js';
-import { el, toast, fmtDate, fmtMoney } from '../ui.js';
+import { el, icons, toast, fmtDate, fmtMoney, countUp } from '../ui.js';
 
 const STATUS_BADGE = { pending: 'amber', approved: 'green', rejected: 'red' };
 
@@ -55,9 +55,15 @@ export default async function billingView() {
 
     el('div', { class: 'card', style: { marginBottom: '16px' } },
       el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' } },
-        el('div', {},
-          el('div', { class: 'muted', style: { fontSize: '12px' } }, 'Your balance'),
-          el('div', { style: { fontSize: '32px', fontWeight: '700' } }, `⚡ ${info.credits || 0}`)),
+        el('div', { style: { display: 'flex', alignItems: 'center', gap: '14px' } },
+          (() => { const t = el('div', { class: 'stat-ic amber', style: { width: '44px', height: '44px', marginBottom: 0 } }); t.innerHTML = icons.zap; return t; })(),
+          el('div', {},
+            el('div', { class: 'muted', style: { fontSize: '12px' } }, 'Your balance'),
+            (() => {
+              const v = el('div', { class: 'num', style: { fontSize: '32px', fontWeight: '750', letterSpacing: '-.6px' } }, '0');
+              requestAnimationFrame(() => countUp(v, info.credits || 0, { suffix: ' credits' }));
+              return v;
+            })())),
         el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
           freeModels.map(m => el('span', { class: 'badge green' }, `${m.name} · Free`)),
           paidModels.map(m => el('span', { class: 'badge accent' }, `${m.name} · ${m.credit_cost}c`))))),

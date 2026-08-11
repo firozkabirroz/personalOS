@@ -44,6 +44,6 @@ export default async function paymentsView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, '💳 Payments'), el('p', {}, 'Approve credit-pack purchases — credits are added instantly on approve'))),
+      el('div', {}, el('h2', {}, 'Payments'), el('p', {}, 'Approve credit-pack purchases — credits are added instantly on approve'))),
     body);
 }

@@ -20,7 +20,7 @@ export default async function configView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, '⚙️ Settings'), el('p', {}, 'Platform is free forever — configure credits & payment text'))),
+      el('div', {}, el('h2', {}, 'Settings'), el('p', {}, 'Platform is free forever — configure credits & payment text'))),
     el('div', { class: 'card' },
       el('div', { class: 'field-row' },
         el('div', { class: 'field' }, el('label', {}, 'Currency symbol'), currency),

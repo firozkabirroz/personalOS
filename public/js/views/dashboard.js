@@ -1,5 +1,5 @@
 import { get, post, put } from '../api.js';
-import { el, icon, fmtDate, fmtMoney, daysUntil, todayStr } from '../ui.js';
+import { el, icon, icons, fmtDate, fmtMoney, daysUntil, todayStr, countUp } from '../ui.js';
 import { navigate } from '../app.js';
 
 export default async function dashboard() {
@@ -28,12 +28,12 @@ export default async function dashboard() {
 
     // Stat row
     el('div', { class: 'grid cols-4', style: { marginBottom: '16px' } },
-      statCard('Tasks today', `${pendingToday} pending`, d.overdueTasks ? `${d.overdueTasks} overdue` : 'Nothing overdue 🎉', 'tasks', () => navigate('tasks')),
-      statCard('Running projects', d.runningProjects.length, `${d.upcomingProjects.length} upcoming`, 'running', () => navigate('running')),
-      statCard('Spent this month', fmtMoney(d.monthExpenses, cur),
-        d.monthIncome ? `Balance: ${fmtMoney(d.monthIncome - d.monthExpenses, cur)}` : 'Expense tracker',
-        'expense', () => navigate('expenses')),
-      statCard('Habits today', `${habitsDone}/${d.habits.length}`, habitsDone === d.habits.length && d.habits.length ? 'All done! 🔥' : 'Keep going', 'habit', () => navigate('habits')),
+      statCard({ label: 'Tasks today', num: pendingToday, suffix: ' pending', hint: d.overdueTasks ? `${d.overdueTasks} overdue` : 'Nothing overdue 🎉', ic: 'tasks', color: 'indigo', onclick: () => navigate('tasks') }),
+      statCard({ label: 'Running projects', num: d.runningProjects.length, hint: `${d.upcomingProjects.length} upcoming`, ic: 'running', color: 'cyan', onclick: () => navigate('running') }),
+      statCard({ label: 'Spent this month', num: d.monthExpenses, prefix: cur + ' ', decimals: 2,
+        hint: d.monthIncome ? `Balance: ${fmtMoney(d.monthIncome - d.monthExpenses, cur)}` : 'Expense tracker',
+        ic: 'expense', color: 'amber', onclick: () => navigate('expenses') }),
+      statCard({ label: 'Habits today', num: habitsDone, suffix: `/${d.habits.length}`, hint: habitsDone === d.habits.length && d.habits.length ? 'All done! 🔥' : 'Keep going', ic: 'habit', color: 'green', onclick: () => navigate('habits') }),
     ),
 
     el('div', { class: 'grid cols-2' },
@@ -98,10 +98,15 @@ export default async function dashboard() {
     ),
   );
 
-  function statCard(label, value, hint, ic, onclick) {
-    return el('div', { class: 'card stat-card', style: { cursor: 'pointer' }, onclick },
-      el('div', { class: 'label' }, icon(ic), label),
-      el('div', { class: 'value' }, String(value)),
+  function statCard({ label, num, prefix = '', suffix = '', decimals = 0, hint, ic, color = 'indigo', onclick }) {
+    const tile = el('div', { class: `stat-ic ${color}` });
+    tile.innerHTML = icons[ic] || '';
+    const value = el('div', { class: 'value' }, prefix + '0' + suffix);
+    requestAnimationFrame(() => countUp(value, num, { prefix, suffix, decimals }));
+    return el('div', { class: 'card stat-card lift', onclick },
+      tile,
+      el('div', { class: 'label' }, label),
+      value,
       el('div', { class: 'hint' }, hint));
   }
 
