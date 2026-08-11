@@ -153,10 +153,59 @@ router.post('/google/drive/upload/:fileId', async (req, res) => {
   }
 });
 
-// ============ NOTION ============
+// ============ NOTION (OAuth one-click + legacy token) ============
+function notionRedirectUri(req) {
+  return `${req.protocol}://${req.get('host')}/api/notion/callback`;
+}
+
+router.get('/notion/auth-url', (req, res) => {
+  const clientId = getPlatformSetting('platform_notion_client_id');
+  if (!clientId) return res.status(400).json({ error: 'Notion isn\'t set up by the admin yet. Ask them to configure it in Admin → Integrations.' });
+  const url = 'https://api.notion.com/v1/oauth/authorize?' + new URLSearchParams({
+    client_id: clientId,
+    response_type: 'code',
+    owner: 'user',
+    redirect_uri: notionRedirectUri(req),
+    state: String(req.userId),
+  });
+  res.json({ url, redirect_uri: notionRedirectUri(req) });
+});
+
+router.get('/notion/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error || !code) return res.send(`<script>window.close()</script>Notion authorization failed: ${error || 'no code'}`);
+  const uid = parseInt(state, 10);
+  const clientId = getPlatformSetting('platform_notion_client_id');
+  const clientSecret = getPlatformSetting('platform_notion_client_secret');
+  try {
+    const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+    const resp = await fetch('https://api.notion.com/v1/oauth/token', {
+      method: 'POST',
+      headers: {
+        authorization: `Basic ${basic}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: notionRedirectUri(req),
+      }),
+    });
+    const tokens = await resp.json();
+    if (!resp.ok) throw new Error(tokens.error_description || tokens.message || tokens.error || 'Token exchange failed');
+    // Notion OAuth returns access_token (no refresh for most public integrations)
+    setSetting(uid, 'notion_token', tokens.access_token);
+    setSetting(uid, 'notion_tokens', JSON.stringify({ ...tokens, obtained_at: Date.now() }));
+    logActivity({ userId: uid, type: 'notion_connected', message: 'Connected Notion via OAuth' });
+    res.send('<body style="font-family:sans-serif;background:#0f1117;color:#e2e4ea;display:grid;place-items:center;height:100vh"><div><h2>✅ Notion connected</h2><p>You can close this window and return to Personal OS.</p></div></body>');
+  } catch (e) {
+    res.send(`<body style="font-family:sans-serif"><h3>Notion connection failed</h3><p>${e.message}</p></body>`);
+  }
+});
+
 function notionHeaders(uid) {
   const token = getSetting(uid, 'notion_token');
-  if (!token) throw new Error('No Notion token configured. Add it in Settings → Integrations.');
+  if (!token) throw new Error('Notion is not connected. Go to Settings and tap Connect Notion.');
   return {
     authorization: `Bearer ${token}`,
     'notion-version': '2022-06-28',

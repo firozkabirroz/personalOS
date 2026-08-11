@@ -60,7 +60,7 @@ const NAV = [
     { route: 'support', label: 'Support', icon: 'ticket', view: support },
   ]},
   { group: 'System', items: [
-    { route: 'billing', label: 'My Subscription', icon: 'card', roles: ['user'], view: billing },
+    { route: 'billing', label: 'Credits', icon: 'card', roles: ['user'], view: billing },
     { route: 'settings', label: 'Settings', icon: 'settings', view: settings },
   ]},
 ];
@@ -115,7 +115,7 @@ function authScreen(mode, hasUsers, prefillError) {
     el('div', { class: 'auth-card' },
       el('div', { class: 'auth-logo' }, el('div', { class: 'mark' }, 'P'), el('h1', {}, 'Personal OS')),
       el('p', { class: 'auth-sub' }, isLogin ? 'Welcome back. Sign in to your dashboard.' :
-        (hasUsers ? 'Create a new account.' : 'Set up your account to get started.')),
+        (hasUsers ? 'Create a free account — no subscription needed.' : 'Set up your account to get started.')),
       err,
       googleBtn,
       el('div', { class: 'auth-divider' }, 'or'),
@@ -202,19 +202,6 @@ function logout() {
   boot();
 }
 
-// ============ Lock screen (expired subscription) ============
-async function lockScreen() {
-  root.innerHTML = '';
-  const view = await billing({ lockMode: true });
-  const logoutBtn = el('button', { class: 'btn ghost', onclick: logout }, icon('logout'), 'Log out');
-  root.append(el('div', { class: 'auth-wrap', style: { alignItems: 'flex-start', overflowY: 'auto', padding: '40px 20px' } },
-    el('div', { style: { width: '100%', maxWidth: '720px' } },
-      el('div', { class: 'auth-logo', style: { justifyContent: 'center', marginBottom: '20px' } },
-        el('div', { class: 'mark' }, 'P'), el('h1', {}, 'Personal OS')),
-      view,
-      el('div', { style: { textAlign: 'center', marginTop: '20px' } }, logoutBtn))));
-}
-
 // ============ Boot ============
 async function boot() {
   // Google login redirects back here with ?glogin=<token> or ?gerror=<message>
@@ -230,7 +217,6 @@ async function boot() {
 
   if (!token()) {
     const { hasUsers } = await api('/auth/status');
-    // landing page "Start free trial" links here with ?signup=1 to skip straight to registration
     const forceSignup = new URLSearchParams(location.search).get('signup') === '1';
     return authScreen(forceSignup || !hasUsers ? 'register' : 'login', hasUsers, gerror || null);
   }
@@ -241,7 +227,6 @@ async function boot() {
     const { hasUsers } = await api('/auth/status');
     return authScreen(hasUsers ? 'login' : 'register', hasUsers);
   }
-  if (currentUser.expired) return lockScreen();
   shell();
   renderRoute();
 }

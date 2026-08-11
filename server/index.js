@@ -30,12 +30,15 @@ app.use('/landing', express.static(path.join(__dirname, '..', 'public-landing'))
 app.use('/api/auth', authRouter);
 app.use('/api', billingPublicRouter);
 
-// Google OAuth callback must be reachable without the Bearer header
+// OAuth callbacks must be reachable without the Bearer header
 app.use('/api', (req, res, next) => {
-  if (req.path === '/google/callback') return integrationsRouter(req, res, next);
+  if (req.path === '/google/callback' || req.path === '/notion/callback') {
+    return integrationsRouter(req, res, next);
+  }
   next();
 });
 
+// App access is free for every registered user — no subscription gate.
 app.use('/api', requireAuth, subscriptionGate);
 app.use('/api', requireAuth, billingRouter);
 app.use('/api', requireAuth, adminRouter);

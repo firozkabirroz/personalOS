@@ -20,13 +20,15 @@ export async function api(path, options = {}) {
     throw new Error('Session expired');
   }
   if (resp.status === 402) {
-    // subscription expired mid-session → reboot into the renewal screen
-    location.reload();
-    throw new Error(data?.error || 'Subscription expired');
+    // Insufficient credits for a paid AI model — stay on page, let the view handle it
+    const err = new Error(data?.error || 'Not enough credits');
+    if (data?.needsCredits) err.needsCredits = true;
+    throw err;
   }
   if (!resp.ok) {
     const err = new Error(data?.error || `Request failed (${resp.status})`);
     if (data?.limitReached) err.limitReached = true;
+    if (data?.needsCredits) err.needsCredits = true;
     throw err;
   }
   return data;

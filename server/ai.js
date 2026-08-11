@@ -1,7 +1,29 @@
 const express = require('express');
-const { db, getSetting } = require('./db');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const { db, getSetting, getCredits, adjustCredits, DATA_DIR, logActivity } = require('./db');
 
 const router = express.Router();
+
+const CHAT_UPLOAD_DIR = path.join(DATA_DIR, 'chat-uploads');
+if (!fs.existsSync(CHAT_UPLOAD_DIR)) fs.mkdirSync(CHAT_UPLOAD_DIR, { recursive: true });
+
+const chatUpload = multer({
+  storage: multer.diskStorage({
+    destination: CHAT_UPLOAD_DIR,
+    filename: (req, file, cb) => {
+      const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+      cb(null, `${Date.now()}-${crypto.randomBytes(4).toString('hex')}-${safe}`);
+    },
+  }),
+  limits: { fileSize: 15 * 1024 * 1024, files: 4 },
+  fileFilter: (req, file, cb) => {
+    const ok = /^(image\/(png|jpeg|jpg|gif|webp)|application\/pdf|text\/plain)$/i.test(file.mimetype);
+    cb(ok ? null : new Error('Only images, PDF, or plain text files are allowed'), ok);
+  },
+});
 
 // Build a compact snapshot of the user's data for the AI's system prompt
 function buildContext(uid) {
@@ -94,80 +116,118 @@ function buildContext(uid) {
   return lines.join('\n');
 }
 
-function currentMonthKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-}
-
-function getUsage(uid) {
-  const row = db.prepare('SELECT message_count FROM ai_usage WHERE user_id=? AND month=?').get(uid, currentMonthKey());
-  return row ? row.message_count : 0;
-}
-
-function incrementUsage(uid) {
-  db.prepare(`INSERT INTO ai_usage (user_id, month, message_count) VALUES (?,?,1)
-    ON CONFLICT(user_id, month) DO UPDATE SET message_count = message_count + 1`).run(uid, currentMonthKey());
-}
-
 function ownerId() {
   return db.prepare("SELECT id FROM users WHERE role='owner' LIMIT 1").get()?.id || null;
 }
 
-function resolveTier(uid) {
-  const user = db.prepare('SELECT tier_key FROM users WHERE id=?').get(uid);
-  return db.prepare(`SELECT p.*, m.provider, m.model_id, m.name AS model_name FROM saas_plans p
-    LEFT JOIN ai_models m ON m.id = p.ai_model_id WHERE p.key = ? AND p.active = 1`).get(user?.tier_key || 'free');
+function listActiveModels() {
+  return db.prepare('SELECT id, name, provider, model_id, is_free, credit_cost, position FROM ai_models WHERE active=1 ORDER BY position ASC, id ASC').all()
+    .map(m => ({ ...m, is_free: !!m.is_free, credit_cost: m.is_free ? 0 : Math.max(1, Number(m.credit_cost) || 1) }));
 }
 
-// Decide which key/provider/model this chat request should use: the
-// platform's plan-provided model (counted against the monthly limit), the
-// user's own BYOK key (unlimited, their own cost), or neither (blocked).
-function resolveAIRoute(uid, role) {
-  const byok = {
-    provider: getSetting(uid, 'ai_provider') || 'anthropic',
-    apiKey: getSetting(uid, 'ai_api_key'),
-    model: getSetting(uid, 'ai_model'),
-    baseUrl: getSetting(uid, 'ai_base_url'),
-  };
+function resolveModel(modelDbId) {
+  if (modelDbId) {
+    const m = db.prepare('SELECT * FROM ai_models WHERE id=? AND active=1').get(modelDbId);
+    if (m) return m;
+  }
+  return db.prepare('SELECT * FROM ai_models WHERE active=1 AND is_free=1 ORDER BY position ASC LIMIT 1').get()
+    || db.prepare('SELECT * FROM ai_models WHERE active=1 ORDER BY position ASC LIMIT 1').get();
+}
+
+/** Resolve platform key + model for a chat. Debits credits for paid models (customers only). */
+function resolveAIRoute(uid, role, modelDbId) {
   const oid = ownerId();
+  const model = resolveModel(modelDbId);
+  if (!model) return { error: 'No AI model is available. Ask the admin to add one in Admin → AI Models.' };
 
+  const isFree = !!model.is_free;
+  const creditCost = isFree ? 0 : Math.max(1, Number(model.credit_cost) || 1);
+  const apiKey = oid ? getSetting(oid, `admin_${model.provider}_key`) : '';
+  const baseUrl = model.provider === 'custom' && oid ? getSetting(oid, 'admin_custom_base_url') : '';
+
+  if (!apiKey) {
+    return { error: `AI service সাময়িকভাবে বন্ধ আছে — admin কে "${model.provider}" key যোগ করতে বলুন।` };
+  }
+
+  // Staff: unlimited, no credit debit
   if (role !== 'user') {
-    // Staff (owner/manager/support): their own key if set, else the best
-    // active platform model, unlimited — they're not paying customers.
-    if (byok.apiKey) return { ...byok, viaPlatform: false };
-    const topModel = db.prepare('SELECT * FROM ai_models WHERE active=1 ORDER BY input_cost DESC LIMIT 1').get();
-    if (!topModel) return { error: 'No AI model has been configured on the platform yet.' };
-    const apiKey = oid ? getSetting(oid, `admin_${topModel.provider}_key`) : '';
-    if (!apiKey) return { error: 'Platform AI key is not configured. Add it in Admin Panel → AI Models.' };
-    return { provider: topModel.provider, apiKey, model: topModel.model_id, viaPlatform: false };
-  }
-
-  const tier = resolveTier(uid);
-  const used = getUsage(uid);
-  const limit = tier?.ai_message_limit ?? 0;
-  const hasModel = !!(tier && tier.model_id);
-  const limitReached = hasModel && used >= limit;
-  const platformKey = hasModel && oid ? getSetting(oid, `admin_${tier.provider}_key`) : '';
-
-  if (hasModel && !limitReached && platformKey) {
-    return { provider: tier.provider, apiKey: platformKey, model: tier.model_id, viaPlatform: true, usage: { used, limit, remaining: limit - used - 1 } };
-  }
-  if (byok.apiKey) return { ...byok, viaPlatform: false };
-
-  if (!hasModel) {
-    return { error: 'এই প্ল্যানে কোনো AI মেসেজ অন্তর্ভুক্ত নেই। প্ল্যান আপগ্রেড করুন, অথবা Settings → AI Assistant-এ নিজের API key যোগ করুন।' };
-  }
-  if (limitReached) {
     return {
-      error: `আপনার "${tier.name}" প্ল্যানে এই মাসের ${limit}টি AI মেসেজ শেষ হয়ে গেছে। প্ল্যান আপগ্রেড করুন, অথবা Settings → AI Assistant-এ নিজের API key যোগ করে সীমাহীন ব্যবহার করুন।`,
-      limitReached: true,
+      provider: model.provider, apiKey, model: model.model_id, baseUrl,
+      modelRow: model, viaPlatform: false, creditCost: 0, isFree: true,
     };
   }
-  // model assigned + within limit, but the admin hasn't added the platform key yet
-  return { error: 'AI service সাময়িকভাবে বন্ধ আছে — অ্যাডমিনকে জানান, অথবা Settings → AI Assistant-এ নিজের API key যোগ করে ব্যবহার করুন।' };
+
+  if (!isFree) {
+    const balance = getCredits(uid);
+    if (balance < creditCost) {
+      return {
+        error: `এই মডেল (${model.name}) ব্যবহার করতে ${creditCost} ক্রেডিট লাগে — আপনার ব্যালেন্স ${balance}। Credits পেজ থেকে কিনুন, অথবা একটি Free মডেল বেছে নিন।`,
+        needsCredits: true,
+        creditCost,
+        balance,
+      };
+    }
+  }
+
+  return {
+    provider: model.provider, apiKey, model: model.model_id, baseUrl,
+    modelRow: model, viaPlatform: true, creditCost, isFree,
+  };
 }
 
-async function callAnthropic({ apiKey, model, system, messages }) {
+function fileToContentPart(file) {
+  const buf = fs.readFileSync(file.path);
+  const b64 = buf.toString('base64');
+  if (file.mimetype.startsWith('image/')) {
+    return { type: 'image', mediaType: file.mimetype, data: b64, name: file.originalname };
+  }
+  if (file.mimetype === 'text/plain') {
+    return { type: 'text_file', text: buf.toString('utf8').slice(0, 40000), name: file.originalname };
+  }
+  // PDF / other — describe + note (most providers need dedicated PDF APIs; include as context note)
+  return { type: 'file_note', name: file.originalname, mime: file.mimetype, size: file.size, data: b64, mediaType: file.mimetype };
+}
+
+function buildUserContent(message, parts) {
+  if (!parts.length) return message;
+  // Anthropic / OpenAI multimodal: array content for images; text files inlined
+  const blocks = [];
+  const notes = [];
+  for (const p of parts) {
+    if (p.type === 'image') {
+      blocks.push({ kind: 'image', mediaType: p.mediaType, data: p.data });
+    } else if (p.type === 'text_file') {
+      notes.push(`[Attached file: ${p.name}]\n${p.text}`);
+    } else {
+      notes.push(`[Attached file: ${p.name} (${p.mime}, ${p.size} bytes) — binary content provided below as base64 for models that support it]`);
+      if (p.mediaType === 'application/pdf') {
+        blocks.push({ kind: 'document', mediaType: p.mediaType, data: p.data });
+      }
+    }
+  }
+  const text = [message, ...notes].filter(Boolean).join('\n\n');
+  return { text, blocks };
+}
+
+async function callAnthropic({ apiKey, model, system, messages, userContent }) {
+  const formatted = messages.map(m => {
+    if (typeof m.content === 'string') return { role: m.role, content: m.content };
+    return m;
+  });
+  // Replace last user message with multimodal content if needed
+  if (userContent && typeof userContent === 'object') {
+    const content = [];
+    if (userContent.text) content.push({ type: 'text', text: userContent.text });
+    for (const b of userContent.blocks || []) {
+      if (b.kind === 'image') {
+        content.push({ type: 'image', source: { type: 'base64', media_type: b.mediaType, data: b.data } });
+      } else if (b.kind === 'document') {
+        content.push({ type: 'document', source: { type: 'base64', media_type: b.mediaType, data: b.data } });
+      }
+    }
+    formatted[formatted.length - 1] = { role: 'user', content };
+  }
+
   const resp = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -175,27 +235,44 @@ async function callAnthropic({ apiKey, model, system, messages }) {
       'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
     },
-    body: JSON.stringify({ model: model || 'claude-sonnet-4-6', max_tokens: 2048, system, messages }),
+    body: JSON.stringify({ model: model || 'claude-sonnet-4-6', max_tokens: 2048, system, messages: formatted }),
   });
   const data = await resp.json();
   if (!resp.ok) throw new Error(data?.error?.message || `Anthropic API error (${resp.status})`);
   return (data.content || []).map(b => b.text || '').join('');
 }
 
-async function callOpenAI({ apiKey, model, baseUrl, system, messages }) {
+async function callOpenAI({ apiKey, model, baseUrl, system, messages, userContent }) {
   const url = (baseUrl || 'https://api.openai.com').replace(/\/+$/, '') + '/v1/chat/completions';
+  const formatted = messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content }));
+  if (userContent && typeof userContent === 'object') {
+    const content = [{ type: 'text', text: userContent.text || '' }];
+    for (const b of userContent.blocks || []) {
+      if (b.kind === 'image') {
+        content.push({ type: 'image_url', image_url: { url: `data:${b.mediaType};base64,${b.data}` } });
+      }
+    }
+    formatted[formatted.length - 1] = { role: 'user', content };
+  }
   const resp = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: model || 'gpt-4o-mini', messages: [{ role: 'system', content: system }, ...messages] }),
+    body: JSON.stringify({ model: model || 'gpt-4o-mini', messages: [{ role: 'system', content: system }, ...formatted] }),
   });
   const data = await resp.json();
   if (!resp.ok) throw new Error(data?.error?.message || `API error (${resp.status})`);
   return data.choices?.[0]?.message?.content || '';
 }
 
+router.get('/ai/models', (req, res) => {
+  const models = listActiveModels();
+  const credits = getCredits(req.userId);
+  const user = db.prepare('SELECT role FROM users WHERE id=?').get(req.userId);
+  res.json({ models, credits, unlimited: user?.role !== 'user' });
+});
+
 router.get('/ai/history', (req, res) => {
-  res.json(db.prepare('SELECT id, role, content, created_at FROM chats WHERE user_id=? ORDER BY id ASC LIMIT 200').all(req.userId));
+  res.json(db.prepare('SELECT id, role, content, created_at, model_id, attachments FROM chats WHERE user_id=? ORDER BY id ASC LIMIT 200').all(req.userId));
 });
 
 router.delete('/ai/history', (req, res) => {
@@ -204,27 +281,47 @@ router.delete('/ai/history', (req, res) => {
 });
 
 router.get('/ai/usage', (req, res) => {
-  const user = db.prepare('SELECT role FROM users WHERE id=?').get(req.userId);
-  if (user.role !== 'user') return res.json({ unlimited: true });
-  const tier = resolveTier(req.userId);
-  const used = getUsage(req.userId);
+  const user = db.prepare('SELECT role, credits FROM users WHERE id=?').get(req.userId);
+  const models = listActiveModels();
+  if (user.role !== 'user') {
+    return res.json({ unlimited: true, credits: user.credits || 0, models });
+  }
   res.json({
-    tier: tier ? { key: tier.key, name: tier.name, model_name: tier.model_name, limit: tier.ai_message_limit } : null,
-    used,
-    remaining: tier ? Math.max(0, tier.ai_message_limit - used) : 0,
-    hasOwnKey: !!getSetting(req.userId, 'ai_api_key'),
+    unlimited: false,
+    credits: user.credits || 0,
+    models,
+    freeModels: models.filter(m => m.is_free).length,
   });
 });
 
-router.post('/ai/chat', async (req, res) => {
+router.post('/ai/chat', (req, res, next) => {
+  chatUpload.array('files', 4)(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, async (req, res) => {
   const uid = req.userId;
-  const { message } = req.body || {};
-  if (!message || !message.trim()) return res.status(400).json({ error: 'Message is empty' });
+  const message = (req.body?.message || '').trim();
+  const modelDbId = req.body?.model_id ? Number(req.body.model_id) : null;
+  if (!message && !(req.files || []).length) return res.status(400).json({ error: 'Message is empty' });
 
   const user = db.prepare('SELECT id, name, username, role FROM users WHERE id=?').get(uid);
-  const route = resolveAIRoute(uid, user.role);
-  if (route.error) return res.status(route.limitReached ? 429 : 400).json({ error: route.error, limitReached: !!route.limitReached });
-  const { provider, apiKey, model, baseUrl, viaPlatform, usage } = route;
+  const route = resolveAIRoute(uid, user.role, modelDbId);
+  if (route.error) {
+    return res.status(route.needsCredits ? 402 : 400).json({
+      error: route.error,
+      needsCredits: !!route.needsCredits,
+      creditCost: route.creditCost,
+      balance: route.balance,
+    });
+  }
+
+  const { provider, apiKey, model, baseUrl, modelRow, viaPlatform, creditCost, isFree } = route;
+  const files = req.files || [];
+  const parts = files.map(fileToContentPart);
+  const userContent = buildUserContent(message || '(see attached files)', parts);
+  const attachmentMeta = JSON.stringify(files.map(f => ({ name: f.originalname, mime: f.mimetype, size: f.size, stored: f.filename })));
+
   const context = buildContext(uid);
   const system = `You are the personal AI assistant inside "${user?.name || user?.username}"'s Personal OS dashboard.
 Today's date is ${new Date().toISOString().slice(0, 10)}.
@@ -234,32 +331,55 @@ You have read access to their live data below. Use it to give specific, practica
 ${context || '(No data yet — the user has not added anything.)'}
 === END DATA ===`;
 
-  // last 10 exchanges as conversation history
   const history = db.prepare('SELECT role, content FROM chats WHERE user_id=? ORDER BY id DESC LIMIT 20').all(uid).reverse();
-  const messages = [...history.map(h => ({ role: h.role, content: h.content })), { role: 'user', content: message }];
+  const messages = [
+    ...history.map(h => ({ role: h.role, content: h.content })),
+    { role: 'user', content: typeof userContent === 'string' ? userContent : userContent.text },
+  ];
 
   try {
     let reply;
-    if (provider === 'anthropic') reply = await callAnthropic({ apiKey, model, system, messages });
-    else reply = await callOpenAI({ apiKey, model, baseUrl: provider === 'custom' ? baseUrl : '', system, messages });
+    const contentArg = parts.length ? userContent : null;
+    if (provider === 'anthropic') reply = await callAnthropic({ apiKey, model, system, messages, userContent: contentArg });
+    else reply = await callOpenAI({ apiKey, model, baseUrl: provider === 'custom' ? baseUrl : '', system, messages, userContent: contentArg });
 
-    db.prepare('INSERT INTO chats (user_id, role, content) VALUES (?,?,?)').run(uid, 'user', message);
-    db.prepare('INSERT INTO chats (user_id, role, content) VALUES (?,?,?)').run(uid, 'assistant', reply);
-    if (viaPlatform) incrementUsage(uid);
+    let newBalance = getCredits(uid);
+    if (viaPlatform && !isFree && creditCost > 0) {
+      newBalance = adjustCredits(uid, -creditCost, {
+        reason: `AI chat · ${modelRow.name}`,
+        refType: 'ai_chat',
+      });
+      logActivity({ userId: uid, type: 'ai_chat', message: `${user.username} used ${modelRow.name} (−${creditCost} credits)` });
+    }
 
-    // Auto-forward AI task reports to Telegram when enabled in Settings
+    const displayMsg = message || '(attachment)';
+    db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments) VALUES (?,?,?,?,?)')
+      .run(uid, 'user', displayMsg, modelRow.id, attachmentMeta);
+    db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments) VALUES (?,?,?,?,?)')
+      .run(uid, 'assistant', reply, modelRow.id, '');
+
     if (getSetting(uid, 'telegram_ai_reports') === 'on') {
       const { send, escapeHtml } = require('./telegram');
-      send(uid, `🤖 <b>AI Task Report</b>\n\n📝 <i>${escapeHtml(message.slice(0, 300))}</i>\n\n${escapeHtml(reply)}`)
+      send(uid, `🤖 <b>AI Task Report</b>\n\n📝 <i>${escapeHtml(displayMsg.slice(0, 300))}</i>\n\n${escapeHtml(reply)}`)
         .catch(e => console.error('Telegram AI forward:', e.message));
     }
 
-    res.json({ reply, usage: usage || null });
+    res.json({
+      reply,
+      model: { id: modelRow.id, name: modelRow.name, is_free: isFree, credit_cost: creditCost },
+      credits: newBalance,
+      charged: isFree ? 0 : creditCost,
+    });
   } catch (e) {
+    // clean up uploaded files on failure
+    for (const f of files) {
+      try { fs.unlinkSync(f.path); } catch {}
+    }
     res.status(502).json({ error: e.message });
   }
 });
 
 module.exports = router;
 module.exports.router = router;
-module.exports.getUsage = getUsage;
+module.exports.getCredits = getCredits;
+module.exports.listActiveModels = listActiveModels;

@@ -232,8 +232,33 @@ CREATE TABLE IF NOT EXISTS chats (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   role TEXT NOT NULL,
   content TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  model_id INTEGER,
+  attachments TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS credit_packs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  credits INTEGER NOT NULL DEFAULT 0,
+  price REAL NOT NULL DEFAULT 0,
+  position INTEGER DEFAULT 0,
+  active INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS credit_ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  delta INTEGER NOT NULL,
+  balance_after INTEGER NOT NULL DEFAULT 0,
+  reason TEXT DEFAULT '',
+  ref_type TEXT DEFAULT '',
+  ref_id INTEGER,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_credit_ledger_user ON credit_ledger(user_id);
 
 CREATE TABLE IF NOT EXISTS payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -259,6 +284,8 @@ CREATE TABLE IF NOT EXISTS ai_models (
   output_cost REAL DEFAULT 0,
   position INTEGER DEFAULT 0,
   active INTEGER DEFAULT 1,
+  is_free INTEGER DEFAULT 0,
+  credit_cost INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -327,20 +354,53 @@ if (!userCols.includes('google_id')) {
 }
 if (!userCols.includes('last_login_at')) db.exec("ALTER TABLE users ADD COLUMN last_login_at TEXT DEFAULT ''");
 
-// Seed default AI models + plan tiers once, based on real per-message cost research
-// (~3000 input + ~500 output tokens/message; BDT figures assume ~120 BDT/USD)
+// Migration: credit balance on users (replaces subscription gating for AI paid models)
+if (!userCols.includes('credits')) {
+  db.exec('ALTER TABLE users ADD COLUMN credits INTEGER DEFAULT 0');
+}
+
+// Migration: free vs paid AI models with per-message credit cost
+const modelCols = db.prepare('PRAGMA table_info(ai_models)').all().map(c => c.name);
+if (!modelCols.includes('is_free')) db.exec('ALTER TABLE ai_models ADD COLUMN is_free INTEGER DEFAULT 0');
+if (!modelCols.includes('credit_cost')) db.exec('ALTER TABLE ai_models ADD COLUMN credit_cost INTEGER DEFAULT 1');
+
+// Migration: chat metadata for model switch + file attachments
+const chatCols = db.prepare('PRAGMA table_info(chats)').all().map(c => c.name);
+if (!chatCols.includes('model_id')) db.exec('ALTER TABLE chats ADD COLUMN model_id INTEGER');
+if (!chatCols.includes('attachments')) db.exec("ALTER TABLE chats ADD COLUMN attachments TEXT DEFAULT ''");
+
+// Migration: payments can grant credits (credit-pack purchases)
+if (!paymentCols.includes('credits')) db.exec('ALTER TABLE payments ADD COLUMN credits INTEGER DEFAULT 0');
+if (!paymentCols.includes('pack_key')) db.exec("ALTER TABLE payments ADD COLUMN pack_key TEXT DEFAULT ''");
+
+// Seed default AI models once (free + paid). Existing DBs keep their catalog.
 if (!db.prepare('SELECT id FROM ai_models LIMIT 1').get()) {
-  const insModel = db.prepare(`INSERT INTO ai_models (name, provider, model_id, input_cost, output_cost, position) VALUES (?,?,?,?,?,?)`);
-  const gpt4oMini = insModel.run('GPT-4o mini', 'openai', 'gpt-4o-mini', 0.15, 0.60, 1).lastInsertRowid;
-  const haiku = insModel.run('Claude Haiku 4.5', 'anthropic', 'claude-haiku-4-5-20251001', 1.00, 5.00, 2).lastInsertRowid;
-  const sonnet = insModel.run('Claude Sonnet 5', 'anthropic', 'claude-sonnet-5', 3.00, 15.00, 3).lastInsertRowid;
-  insModel.run('Claude Opus 4.8', 'anthropic', 'claude-opus-4-8', 5.00, 25.00, 4);
+  const insModel = db.prepare(`INSERT INTO ai_models (name, provider, model_id, input_cost, output_cost, position, is_free, credit_cost) VALUES (?,?,?,?,?,?,?,?)`);
+  const gpt4oMini = insModel.run('GPT-4o mini', 'openai', 'gpt-4o-mini', 0.15, 0.60, 1, 1, 0).lastInsertRowid;
+  const haiku = insModel.run('Claude Haiku 4.5', 'anthropic', 'claude-haiku-4-5-20251001', 1.00, 5.00, 2, 0, 1).lastInsertRowid;
+  const sonnet = insModel.run('Claude Sonnet 5', 'anthropic', 'claude-sonnet-5', 3.00, 15.00, 3, 0, 3).lastInsertRowid;
+  insModel.run('Claude Opus 4.8', 'anthropic', 'claude-opus-4-8', 5.00, 25.00, 4, 0, 5);
 
   const insPlan = db.prepare(`INSERT INTO saas_plans (key, name, monthly_price, yearly_price, ai_model_id, ai_message_limit, is_free, position) VALUES (?,?,?,?,?,?,?,?)`);
-  insPlan.run('free', 'Free', 0, 0, gpt4oMini, 15, 1, 1);
-  insPlan.run('starter', 'Starter', 100, 999, gpt4oMini, 200, 0, 2);
-  insPlan.run('pro', 'Pro', 300, 2999, haiku, 150, 0, 3);
-  insPlan.run('business', 'Business', 700, 6999, sonnet, 100, 0, 4);
+  insPlan.run('free', 'Free', 0, 0, gpt4oMini, 0, 1, 1);
+  insPlan.run('starter', 'Starter', 0, 0, gpt4oMini, 0, 1, 2);
+  insPlan.run('pro', 'Pro', 0, 0, haiku, 0, 1, 3);
+  insPlan.run('business', 'Business', 0, 0, sonnet, 0, 1, 4);
+} else {
+  // Ensure at least one free model exists on upgraded installs
+  const hasFree = db.prepare('SELECT id FROM ai_models WHERE is_free=1 AND active=1 LIMIT 1').get();
+  if (!hasFree) {
+    const cheapest = db.prepare('SELECT id FROM ai_models WHERE active=1 ORDER BY input_cost ASC, id ASC LIMIT 1').get();
+    if (cheapest) db.prepare('UPDATE ai_models SET is_free=1, credit_cost=0 WHERE id=?').run(cheapest.id);
+  }
+}
+
+// Seed default credit packs once
+if (!db.prepare('SELECT id FROM credit_packs LIMIT 1').get()) {
+  const insPack = db.prepare(`INSERT INTO credit_packs (key, name, credits, price, position) VALUES (?,?,?,?,?)`);
+  insPack.run('starter', 'Starter Pack', 50, 100, 1);
+  insPack.run('plus', 'Plus Pack', 150, 250, 2);
+  insPack.run('pro', 'Pro Pack', 400, 600, 3);
 }
 
 function getSetting(userId, key) {
@@ -357,4 +417,20 @@ function logActivity({ userId, type, message }) {
   db.prepare('INSERT INTO activity_log (user_id, type, message) VALUES (?,?,?)').run(userId || null, type, message);
 }
 
-module.exports = { db, getSetting, setSetting, logActivity, DATA_DIR };
+function getCredits(userId) {
+  return db.prepare('SELECT credits FROM users WHERE id=?').get(userId)?.credits || 0;
+}
+
+/** Atomically adjust a user's credit balance and write a ledger row. Returns new balance. */
+function adjustCredits(userId, delta, { reason = '', refType = '', refId = null } = {}) {
+  const tx = db.transaction(() => {
+    db.prepare('UPDATE users SET credits = MAX(0, COALESCE(credits,0) + ?) WHERE id=?').run(delta, userId);
+    const balance = getCredits(userId);
+    db.prepare(`INSERT INTO credit_ledger (user_id, delta, balance_after, reason, ref_type, ref_id)
+      VALUES (?,?,?,?,?,?)`).run(userId, delta, balance, reason, refType, refId);
+    return balance;
+  });
+  return tx();
+}
+
+module.exports = { db, getSetting, setSetting, logActivity, getCredits, adjustCredits, DATA_DIR };

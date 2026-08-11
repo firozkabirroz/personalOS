@@ -31,19 +31,19 @@ router.post('/register', (req, res) => {
   const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(username.trim().toLowerCase());
   if (exists) return res.status(409).json({ error: 'Username already taken' });
 
-  const { saasConfig, addDays, notifyOwner } = require('./billing');
+  const { notifyOwner, grantSignupCredits } = require('./billing');
   const isFirst = db.prepare('SELECT COUNT(*) c FROM users').get().c === 0;
-  const trialDays = Math.max(0, parseInt(saasConfig().saas_trial_days, 10) || 7);
 
   const hash = bcrypt.hashSync(password, 10);
-  const info = db.prepare('INSERT INTO users (username, password_hash, name, role, plan, plan_expires, last_login_at) VALUES (?,?,?,?,?,?,datetime(\'now\'))')
+  const info = db.prepare('INSERT INTO users (username, password_hash, name, role, plan, plan_expires, last_login_at, credits) VALUES (?,?,?,?,?,?,datetime(\'now\'),0)')
     .run(username.trim().toLowerCase(), hash, (name || username).trim(),
       isFirst ? 'owner' : 'user',
-      isFirst ? 'lifetime' : 'trial',
-      isFirst ? '' : addDays(trialDays));
+      'lifetime',
+      '');
 
-  if (!isFirst) notifyOwner(`🆕 <b>New user registered</b>\nUsername: ${username.trim().toLowerCase()}\nTrial: ${trialDays} days`);
-  logActivity({ userId: info.lastInsertRowid, type: 'registered', message: `${username.trim().toLowerCase()} registered${isFirst ? ' (owner)' : ''}` });
+  const bonus = isFirst ? 0 : grantSignupCredits(info.lastInsertRowid);
+  if (!isFirst) notifyOwner(`🆕 <b>New user registered</b>\nUsername: ${username.trim().toLowerCase()}\nSignup bonus: ${bonus} credits`);
+  logActivity({ userId: info.lastInsertRowid, type: 'registered', message: `${username.trim().toLowerCase()} registered${isFirst ? ' (owner)' : ` (+${bonus} credits)`}` });
   const token = jwt.sign({ uid: info.lastInsertRowid }, JWT_SECRET, { expiresIn: '30d' });
   res.json({ token, user: { id: info.lastInsertRowid, username: username.trim().toLowerCase(), name: (name || username).trim() } });
 });
@@ -128,19 +128,19 @@ router.get('/google/callback', async (req, res) => {
     }
 
     if (!user) {
-      const { saasConfig, addDays, notifyOwner } = require('./billing');
+      const { notifyOwner, grantSignupCredits } = require('./billing');
       const isFirst = db.prepare('SELECT COUNT(*) c FROM users').get().c === 0;
-      const trialDays = Math.max(0, parseInt(saasConfig().saas_trial_days, 10) || 7);
       const randomHash = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 10);
-      const info = db.prepare(`INSERT INTO users (username, password_hash, name, role, plan, plan_expires, google_id)
-        VALUES (?,?,?,?,?,?,?)`).run(
+      const info = db.prepare(`INSERT INTO users (username, password_hash, name, role, plan, plan_expires, google_id, credits)
+        VALUES (?,?,?,?,?,?,?,0)`).run(
         email, randomHash, profile.name || email,
         isFirst ? 'owner' : 'user',
-        isFirst ? 'lifetime' : 'trial',
-        isFirst ? '' : addDays(trialDays),
+        'lifetime',
+        '',
         googleId);
-      if (!isFirst) notifyOwner(`🆕 <b>New user registered via Google</b>\nUsername: ${email}\nTrial: ${trialDays} days`);
-      logActivity({ userId: info.lastInsertRowid, type: 'registered', message: `${email} registered via Google${isFirst ? ' (owner)' : ''}` });
+      const bonus = isFirst ? 0 : grantSignupCredits(info.lastInsertRowid);
+      if (!isFirst) notifyOwner(`🆕 <b>New user registered via Google</b>\nUsername: ${email}\nSignup bonus: ${bonus} credits`);
+      logActivity({ userId: info.lastInsertRowid, type: 'registered', message: `${email} registered via Google${isFirst ? ' (owner)' : ` (+${bonus} credits)`}` });
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
     } else {
       logActivity({ userId: user.id, type: 'google_login', message: `${user.username} signed in via Google` });
@@ -179,10 +179,9 @@ function requireAuth(req, res, next) {
 }
 
 router.get('/me', requireAuth, (req, res) => {
-  const user = db.prepare('SELECT id, username, name, role, plan, plan_expires, tier_key FROM users WHERE id = ?').get(req.userId);
+  const user = db.prepare('SELECT id, username, name, role, plan, plan_expires, tier_key, credits FROM users WHERE id = ?').get(req.userId);
   if (!user) return res.status(401).json({ error: 'User not found' });
-  const { isExpired } = require('./billing');
-  res.json({ user: { ...user, expired: isExpired(user) } });
+  res.json({ user: { ...user, credits: user.credits || 0, expired: false } });
 });
 
 module.exports = { router, requireAuth, JWT_SECRET };

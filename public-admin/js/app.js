@@ -22,7 +22,7 @@ const NAV = [
   { group: 'Customers', roles: ['owner', 'manager'], items: [
     { route: 'users', label: 'Users', icon: 'team', view: users },
     { route: 'payments', label: 'Payments', icon: 'card', view: payments },
-    { route: 'plans', label: 'Plans', icon: 'finance', view: plans },
+    { route: 'plans', label: 'Credit Packs', icon: 'finance', view: plans },
   ]},
   { group: 'Platform', roles: ['owner', 'manager'], items: [
     { route: 'ai', label: 'AI Models', icon: 'ai', view: aiModels },
