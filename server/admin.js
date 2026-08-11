@@ -1,5 +1,5 @@
 const express = require('express');
-const { db, getSetting, getCredits } = require('./db');
+const { db, getSetting } = require('./db');
 const { getPlatformSetting, setPlatformSetting, mask } = require('./platform');
 const { requireAdmin } = require('./billing');
 
@@ -37,7 +37,7 @@ router.post('/admin/integrations', requireAdmin, async (req, res) => {
 
 // ============ Per-user activity/data drill-down ============
 router.get('/admin/users/:id/detail', requireAdmin, (req, res) => {
-  const user = db.prepare('SELECT id, username, name, role, plan, plan_expires, tier_key, credits, created_at, last_login_at FROM users WHERE id=?').get(req.params.id);
+  const user = db.prepare('SELECT id, username, name, role, created_at, last_login_at FROM users WHERE id=?').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const count = (table) => db.prepare(`SELECT COUNT(*) c FROM ${table} WHERE user_id=?`).get(user.id).c;
@@ -58,21 +58,16 @@ router.get('/admin/users/:id/detail', requireAdmin, (req, res) => {
     telegram_connected: !!getSetting(user.id, 'telegram_chat_id'),
   };
 
-  const payments = db.prepare('SELECT * FROM payments WHERE user_id=? ORDER BY id DESC LIMIT 10').all(user.id);
   const activity = db.prepare('SELECT * FROM activity_log WHERE user_id=? ORDER BY id DESC LIMIT 30').all(user.id);
-  const ledger = db.prepare('SELECT * FROM credit_ledger WHERE user_id=? ORDER BY id DESC LIMIT 20').all(user.id);
   const recentChats = db.prepare('SELECT id, role, content, created_at, model_id FROM chats WHERE user_id=? ORDER BY id DESC LIMIT 40').all(user.id);
   const recentTasks = db.prepare('SELECT id, title, date, status, priority FROM tasks WHERE user_id=? ORDER BY id DESC LIMIT 15').all(user.id);
   const recentExpenses = db.prepare('SELECT id, title, amount, category, date, type FROM expenses WHERE user_id=? ORDER BY id DESC LIMIT 15').all(user.id);
 
   res.json({
-    user: { ...user, credits: user.credits || 0 },
+    user,
     counts,
-    credits: getCredits(user.id),
     integrations,
-    payments,
     activity,
-    ledger,
     recentChats: recentChats.reverse(),
     recentTasks,
     recentExpenses,
@@ -91,7 +86,6 @@ router.get('/admin/users/:id/data/:module', requireAdmin, (req, res) => {
     chats: 'SELECT id, role, content, created_at, model_id, attachments FROM chats WHERE user_id=? ORDER BY id DESC LIMIT 200',
     events: 'SELECT * FROM events WHERE user_id=? ORDER BY date DESC LIMIT 200',
     trips: 'SELECT * FROM trips WHERE user_id=? ORDER BY id DESC LIMIT 50',
-    ledger: 'SELECT * FROM credit_ledger WHERE user_id=? ORDER BY id DESC LIMIT 200',
   };
   const sql = allowed[req.params.module];
   if (!sql) return res.status(400).json({ error: 'Unknown module' });
@@ -107,7 +101,7 @@ router.get('/admin/activity', requireAdmin, (req, res) => {
   res.json(db.prepare(sql).all(...params));
 });
 
-// ============ Growth stats ============
+// ============ Growth stats (signups + AI chats, last 30 days) ============
 router.get('/admin/stats/growth', requireAdmin, (req, res) => {
   const days = [];
   const d = new Date();
@@ -121,12 +115,12 @@ router.get('/admin/stats/growth', requireAdmin, (req, res) => {
   const signupRows = db.prepare(`SELECT date(created_at) d, COUNT(*) c FROM users WHERE role='user' AND created_at >= ? GROUP BY d`).all(days[0]);
   const signupMap = Object.fromEntries(signupRows.map(r => [r.d, r.c]));
 
-  const revenueRows = db.prepare(`SELECT decided_at d, COALESCE(SUM(amount),0) t FROM payments WHERE status='approved' AND decided_at >= ? GROUP BY d`).all(days[0]);
-  const revenueMap = Object.fromEntries(revenueRows.map(r => [r.d, r.t]));
+  const chatRows = db.prepare(`SELECT date(created_at) d, COUNT(*) c FROM chats WHERE role='user' AND created_at >= ? GROUP BY d`).all(days[0]);
+  const chatMap = Object.fromEntries(chatRows.map(r => [r.d, r.c]));
 
   res.json({
     signups: days.map(d => ({ label: d.slice(5), value: signupMap[d] || 0 })),
-    revenue: days.map(d => ({ label: d.slice(5), value: revenueMap[d] || 0 })),
+    aiChats: days.map(d => ({ label: d.slice(5), value: chatMap[d] || 0 })),
   });
 });
 

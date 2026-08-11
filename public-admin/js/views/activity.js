@@ -3,7 +3,6 @@ import { el, fmtDate } from '/js/ui.js';
 
 const TYPE_ICON = {
   registered: '🆕', google_login: '🔵', google_connected: '📅', telegram_connected: '📨',
-  payment_submitted: '💳', payment_approved: '✅', payment_rejected: '❌',
   ticket_created: '🎫', plan_changed: '🔧', team_member_added: '👥',
 };
 const TYPES = Object.keys(TYPE_ICON);
@@ -33,7 +32,7 @@ export default async function activityView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, 'Activity'), el('p', {}, 'Platform-wide event feed — signups, payments, connections, tickets')),
+      el('div', {}, el('h2', {}, 'Activity'), el('p', {}, 'Platform-wide event feed — signups, connections, tickets')),
       el('div', { class: 'page-actions' }, filterSelect)),
     body);
 }

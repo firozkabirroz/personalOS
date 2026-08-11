@@ -11,45 +11,23 @@ const SUGGESTIONS = [
 ];
 
 export default async function aiView() {
-  const [{ models, credits: startCredits, unlimited }, history] = await Promise.all([
+  const [{ models }, history] = await Promise.all([
     get('/ai/models'),
     get('/ai/history'),
   ]);
-  let credits = startCredits || 0;
-  let selectedModelId = models.find(m => m.is_free)?.id || models[0]?.id || null;
+  let selectedModelId = models[0]?.id || null;
   let pendingFiles = [];
 
   const scroll = el('div', { class: 'chat-scroll' });
-  const creditBadge = el('span', {});
-
-  function syncSidebarChip() {
-    const chip = document.querySelector('.credits-chip b');
-    if (chip) chip.textContent = String(credits);
-  }
-
-  function renderCreditBadge() {
-    creditBadge.innerHTML = '';
-    if (unlimited) {
-      creditBadge.append(el('span', { class: 'badge green' }, 'Unlimited'));
-      return;
-    }
-    const m = models.find(x => x.id === selectedModelId);
-    creditBadge.append(
-      el('span', { class: `badge ${credits > 0 ? 'accent' : 'amber'}` }, `⚡ ${credits}`),
-      m && !m.is_free ? el('span', { class: 'badge', style: { marginLeft: '6px' } }, `−${m.credit_cost}/msg`) : null,
-    );
-  }
 
   const modelSelect = el('select', {
     class: 'model-pill',
     title: 'Switch AI model',
-    onchange: (e) => { selectedModelId = Number(e.target.value); renderCreditBadge(); },
+    onchange: (e) => { selectedModelId = Number(e.target.value); },
   });
   for (const m of models) {
-    const label = m.is_free ? `${m.name} · Free` : `${m.name} · ${m.credit_cost}c`;
-    modelSelect.append(el('option', { value: m.id, selected: m.id === selectedModelId }, label));
+    modelSelect.append(el('option', { value: m.id, selected: m.id === selectedModelId }, m.name));
   }
-  renderCreditBadge();
 
   function aiAvatar() {
     const who = el('div', { class: 'who' });
@@ -103,8 +81,8 @@ export default async function aiView() {
     heroIc.innerHTML = icons.sparkles;
     return el('div', { class: 'welcome-hero' },
       heroIc,
-      el('h3', {}, 'Your personal AI'),
-      el('p', {}, 'It can see your tasks, projects, expenses, habits and more. Free models are unlimited — switch to a stronger model anytime with credits. Attach files if you want.'),
+      el('h3', {}, 'Your personal AI — free & unlimited'),
+      el('p', {}, 'It can see your tasks, projects, expenses, habits and more. Switch models anytime, attach files if you want — everything is free.'),
       el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center' } },
         SUGGESTIONS.map(s => el('button', { class: 'btn ghost sm', onclick: () => { input.value = s; send(); } }, s))));
   }
@@ -179,16 +157,12 @@ export default async function aiView() {
 
       const r = await api('/ai/chat', { method: 'POST', body: fd });
       typing.remove();
-      const meta = r.model ? `${r.model.name}${r.charged ? ` · −${r.charged} credit${r.charged > 1 ? 's' : ''}` : ' · Free'}` : '';
-      scroll.append(bubble('assistant', r.reply, { meta }));
-      if (typeof r.credits === 'number') { credits = r.credits; renderCreditBadge(); syncSidebarChip(); }
+      scroll.append(bubble('assistant', r.reply, { meta: r.model?.name || '' }));
     } catch (e) {
       typing.remove();
       scroll.append(el('div', { class: 'msg ai' }, el('div', { class: 'who' }, '!'),
         el('div', { class: 'msg-col' },
-          el('div', { class: 'bubble', style: { borderColor: 'rgba(239,68,68,.4)', color: '#fca5a5' } }, e.message),
-          e.needsCredits ? el('div', { class: 'msg-meta' },
-            el('a', { style: { cursor: 'pointer' }, onclick: () => navigate('billing') }, 'Buy credits →')) : null)));
+          el('div', { class: 'bubble', style: { borderColor: 'rgba(239,68,68,.4)', color: '#fca5a5' } }, e.message))));
     }
     busy = false;
     sendBtn.disabled = false;
@@ -208,8 +182,8 @@ export default async function aiView() {
   return el('div', {},
     el('div', { class: 'page-head', style: { marginBottom: '12px' } },
       el('div', {}, el('h2', {}, 'AI Assistant'),
-        el('p', {}, 'Free models cost nothing — switch models or attach files right from the composer')),
-      el('div', { class: 'page-actions' }, creditBadge, clearBtn)),
+        el('p', {}, 'Free & unlimited — switch models or attach files right from the composer')),
+      el('div', { class: 'page-actions' }, el('span', { class: 'badge green' }, 'Free · Unlimited'), clearBtn)),
     el('div', { class: 'chat-wrap' },
       scroll,
       el('div', { class: 'chat-input' },

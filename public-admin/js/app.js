@@ -3,14 +3,11 @@ import { el, icon, icons, toast, skeletonPage } from '/js/ui.js';
 
 import overview from './views/overview.js';
 import users from './views/users.js';
-import payments from './views/payments.js';
-import plans from './views/plans.js';
 import aiModels from './views/ai.js';
 import integrations from './views/integrations.js';
 import activity from './views/activity.js';
 import support from './views/support.js';
 import team from './views/team.js';
-import config from './views/config.js';
 
 const root = document.getElementById('root');
 export let currentUser = null;
@@ -19,16 +16,13 @@ const NAV = [
   { group: 'Overview', roles: ['owner', 'manager'], items: [
     { route: 'overview', label: 'Overview', icon: 'dashboard', view: overview },
   ]},
-  { group: 'Customers', roles: ['owner', 'manager'], items: [
+  { group: 'Users', roles: ['owner', 'manager'], items: [
     { route: 'users', label: 'Users', icon: 'team', view: users },
-    { route: 'payments', label: 'Payments', icon: 'card', view: payments },
-    { route: 'plans', label: 'Credit Packs', icon: 'finance', view: plans },
   ]},
   { group: 'Platform', roles: ['owner', 'manager'], items: [
     { route: 'ai', label: 'AI Models', icon: 'ai', view: aiModels },
     { route: 'integrations', label: 'Integrations', icon: 'link', view: integrations },
     { route: 'activity', label: 'Activity', icon: 'running', view: activity },
-    { route: 'settings', label: 'Settings', icon: 'settings', view: config },
   ]},
   { group: 'Support', items: [
     { route: 'support', label: 'Support', icon: 'ticket', view: support },

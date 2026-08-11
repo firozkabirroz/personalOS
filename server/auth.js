@@ -47,19 +47,18 @@ router.post('/register', (req, res) => {
   const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(username.trim().toLowerCase());
   if (exists) return res.status(409).json({ error: 'Username already taken' });
 
-  const { notifyOwner, grantSignupCredits } = require('./billing');
+  const { notifyOwner } = require('./billing');
   const isFirst = db.prepare('SELECT COUNT(*) c FROM users').get().c === 0;
 
   const hash = bcrypt.hashSync(password, 10);
-  const info = db.prepare('INSERT INTO users (username, password_hash, name, role, plan, plan_expires, last_login_at, credits) VALUES (?,?,?,?,?,?,datetime(\'now\'),0)')
+  const info = db.prepare('INSERT INTO users (username, password_hash, name, role, plan, plan_expires, last_login_at) VALUES (?,?,?,?,?,?,datetime(\'now\'))')
     .run(username.trim().toLowerCase(), hash, (name || username).trim(),
       isFirst ? 'owner' : 'user',
       'lifetime',
       '');
 
-  const bonus = isFirst ? 0 : grantSignupCredits(info.lastInsertRowid);
-  if (!isFirst) notifyOwner(`🆕 <b>New user registered</b>\nUsername: ${username.trim().toLowerCase()}\nSignup bonus: ${bonus} credits`);
-  logActivity({ userId: info.lastInsertRowid, type: 'registered', message: `${username.trim().toLowerCase()} registered${isFirst ? ' (owner)' : ` (+${bonus} credits)`}` });
+  if (!isFirst) notifyOwner(`🆕 <b>New user registered</b>\nUsername: ${username.trim().toLowerCase()}`);
+  logActivity({ userId: info.lastInsertRowid, type: 'registered', message: `${username.trim().toLowerCase()} registered${isFirst ? ' (owner)' : ''}` });
   const token = jwt.sign({ uid: info.lastInsertRowid }, JWT_SECRET, { expiresIn: '30d' });
   res.json({ token, user: { id: info.lastInsertRowid, username: username.trim().toLowerCase(), name: (name || username).trim() } });
 });
@@ -144,19 +143,18 @@ router.get('/google/callback', async (req, res) => {
     }
 
     if (!user) {
-      const { notifyOwner, grantSignupCredits } = require('./billing');
+      const { notifyOwner } = require('./billing');
       const isFirst = db.prepare('SELECT COUNT(*) c FROM users').get().c === 0;
       const randomHash = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 10);
-      const info = db.prepare(`INSERT INTO users (username, password_hash, name, role, plan, plan_expires, google_id, credits)
-        VALUES (?,?,?,?,?,?,?,0)`).run(
+      const info = db.prepare(`INSERT INTO users (username, password_hash, name, role, plan, plan_expires, google_id)
+        VALUES (?,?,?,?,?,?,?)`).run(
         email, randomHash, profile.name || email,
         isFirst ? 'owner' : 'user',
         'lifetime',
         '',
         googleId);
-      const bonus = isFirst ? 0 : grantSignupCredits(info.lastInsertRowid);
-      if (!isFirst) notifyOwner(`🆕 <b>New user registered via Google</b>\nUsername: ${email}\nSignup bonus: ${bonus} credits`);
-      logActivity({ userId: info.lastInsertRowid, type: 'registered', message: `${email} registered via Google${isFirst ? ' (owner)' : ` (+${bonus} credits)`}` });
+      if (!isFirst) notifyOwner(`🆕 <b>New user registered via Google</b>\nUsername: ${email}`);
+      logActivity({ userId: info.lastInsertRowid, type: 'registered', message: `${email} registered via Google${isFirst ? ' (owner)' : ''}` });
       user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
     } else {
       logActivity({ userId: user.id, type: 'google_login', message: `${user.username} signed in via Google` });
@@ -195,9 +193,9 @@ function requireAuth(req, res, next) {
 }
 
 router.get('/me', requireAuth, (req, res) => {
-  const user = db.prepare('SELECT id, username, name, role, plan, plan_expires, tier_key, credits FROM users WHERE id = ?').get(req.userId);
+  const user = db.prepare('SELECT id, username, name, role, created_at FROM users WHERE id = ?').get(req.userId);
   if (!user) return res.status(401).json({ error: 'User not found' });
-  res.json({ user: { ...user, credits: user.credits || 0, expired: false } });
+  res.json({ user: { ...user, expired: false } });
 });
 
 module.exports = { router, requireAuth, JWT_SECRET };

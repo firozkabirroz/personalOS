@@ -5,7 +5,7 @@ const ROLE_BADGE = { owner: 'purple', manager: 'accent', support: 'cyan' };
 const ROLE_LABEL = { owner: 'Owner', manager: 'Manager', support: 'Support' };
 const ROLE_DESC = {
   owner: 'Full access to everything, can manage the team',
-  manager: 'Can see/do everything for customers, payments, pricing and support — cannot change the team',
+  manager: 'Can manage users, AI models, integrations and support — cannot change the team',
   support: 'Can only view and reply to support tickets',
 };
 
