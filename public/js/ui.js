@@ -62,12 +62,110 @@ export const icons = {
   card: I('<rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>'),
   ticket: I('<path d="M3 9a2 2 0 002-2h14a2 2 0 002 2v6a2 2 0 00-2 2H5a2 2 0 00-2-2z"/><path d="M13 5v14" stroke-dasharray="2 2"/>'),
   team: I('<path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/>'),
+  zap: I('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>'),
+  paperclip: I('<path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>'),
+  sparkles: I('<path d="M12 3l1.9 5.7L19.6 10l-5.7 1.9L12 17.6l-1.9-5.7L4.4 10l5.7-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>'),
+  bell: I('<path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/>'),
+  google: I('<circle cx="12" cy="12" r="10"/><path d="M12 8v4h4"/>'),
+  book: I('<path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/>'),
 };
 
 export function icon(name) {
   const span = el('span', { style: { display: 'inline-flex' } });
   span.innerHTML = icons[name] || '';
   return span.firstChild;
+}
+
+// ============ Markdown (safe, minimal — for AI chat replies) ============
+export function renderMarkdown(src) {
+  const codeBlocks = [];
+  let s = String(src ?? '');
+
+  // pull out fenced code blocks first so nothing inside gets transformed
+  s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, (m, lang, code) => {
+    codeBlocks.push(`<pre><code>${esc(code.replace(/\n$/, ''))}</code></pre>`);
+    return `\u0000CODE${codeBlocks.length - 1}\u0000`;
+  });
+
+  s = esc(s);
+
+  s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  s = s.replace(/^#{1,3} (.*)$/gm, '<h3>$1</h3>');
+  s = s.replace(/^#{4,6} (.*)$/gm, '<h4>$1</h4>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?]|$)/g, '$1<i>$2</i>');
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/^&gt; (.*)$/gm, '<blockquote>$1</blockquote>');
+
+  // group consecutive list lines
+  s = s.replace(/((?:^[-*] .*(?:\n|$))+)/gm, (block) => {
+    const items = block.trim().split('\n').map(l => `<li>${l.replace(/^[-*] /, '')}</li>`).join('');
+    return `<ul>${items}</ul>\n`;
+  });
+  s = s.replace(/((?:^\d+[.)] .*(?:\n|$))+)/gm, (block) => {
+    const items = block.trim().split('\n').map(l => `<li>${l.replace(/^\d+[.)] /, '')}</li>`).join('');
+    return `<ol>${items}</ol>\n`;
+  });
+
+  // paragraphs: blank line = new <p>, single newline = <br> (block tags excluded)
+  const BLOCK = /^<(h3|h4|ul|ol|pre|blockquote)/;
+  s = s.split(/\n{2,}/).map(chunk => {
+    const t = chunk.trim();
+    if (!t) return '';
+    if (BLOCK.test(t) || t.startsWith('\u0000CODE')) return t;
+    return `<p>${t.replace(/\n/g, '<br>')}</p>`;
+  }).join('');
+
+  s = s.replace(/\u0000CODE(\d+)\u0000/g, (m, i) => codeBlocks[Number(i)]);
+
+  const div = el('div', { class: 'bubble md' });
+  div.innerHTML = s;
+  return div;
+}
+
+// ============ Count-up number animation ============
+export function countUp(node, target, { duration = 650, prefix = '', suffix = '', decimals = 0 } = {}) {
+  const val = Number(target) || 0;
+  const start = performance.now();
+  function frame(now) {
+    const p = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - p, 3);
+    const cur = val * eased;
+    node.textContent = prefix + cur.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals }) + suffix;
+    if (p < 1) requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  return node;
+}
+
+// ============ Skeleton loaders ============
+export function skeleton(w = '100%', h = '16px', style = {}) {
+  return el('div', { class: 'sk', style: { width: w, height: h, ...style } });
+}
+
+export function skeletonPage() {
+  return el('div', { class: 'sk-page' },
+    el('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+      skeleton('220px', '24px'), skeleton('320px', '13px')),
+    el('div', { class: 'sk-row' },
+      skeleton('100%', '96px', { borderRadius: '14px' }),
+      skeleton('100%', '96px', { borderRadius: '14px' }),
+      skeleton('100%', '96px', { borderRadius: '14px' }),
+      skeleton('100%', '96px', { borderRadius: '14px' })),
+    el('div', { class: 'sk-row', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))' } },
+      skeleton('100%', '220px', { borderRadius: '14px' }),
+      skeleton('100%', '220px', { borderRadius: '14px' })));
+}
+
+// ============ Empty state ============
+export function emptyState({ icon: ic = 'sparkles', title, sub, action }) {
+  const iconWrap = el('div', { class: 'empty-ic' });
+  iconWrap.innerHTML = icons[ic] || icons.sparkles;
+  return el('div', { class: 'empty' },
+    iconWrap,
+    title ? el('h4', {}, title) : null,
+    sub ? el('p', {}, sub) : null,
+    action || null);
 }
 
 // ============ Toast ============

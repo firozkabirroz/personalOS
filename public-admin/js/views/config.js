@@ -3,23 +3,28 @@ import { el, toast } from '/js/ui.js';
 
 export default async function configView() {
   const cfg = await get('/admin/config');
-  const f = {};
-  const field = (key, label, type = 'text') => {
-    const input = type === 'textarea' ? el('textarea', { rows: 4 }) : el('input', { type });
-    input.value = cfg[key] || '';
-    f[key] = input;
-    return el('div', { class: 'field' }, el('label', {}, label), input);
-  };
+
+  const currency = el('input', {}); currency.value = cfg.saas_currency || '৳';
+  const signupCredits = el('input', { type: 'number' }); signupCredits.value = cfg.saas_signup_credits || '10';
+  const paymentInfo = el('textarea', { rows: 5 }); paymentInfo.value = cfg.saas_payment_info || '';
+
+  const save = el('button', { class: 'btn', onclick: async () => {
+    await post('/admin/config', {
+      saas_currency: currency.value,
+      saas_signup_credits: signupCredits.value,
+      saas_payment_info: paymentInfo.value,
+      saas_trial_days: '0',
+    });
+    toast('Settings saved ✓');
+  } }, 'Save settings');
+
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, '⚙️ Settings'), el('p', {}, 'Trial length, currency and payment instructions'))),
-    el('div', { class: 'card', style: { maxWidth: '620px' } },
-      el('div', { class: 'field-row' }, field('saas_currency', 'Currency symbol'), field('saas_trial_days', 'Free trial (days)', 'number')),
-      field('saas_payment_info', 'Payment instructions (shown to customers)', 'textarea'),
-      el('button', { class: 'btn', style: { marginTop: '8px' }, onclick: async () => {
-        const body = {};
-        for (const [k, input] of Object.entries(f)) body[k] = input.value;
-        await post('/admin/config', body);
-        toast('Settings saved ✓');
-      } }, 'Save settings')));
+      el('div', {}, el('h2', {}, 'Settings'), el('p', {}, 'Platform is free forever — configure credits & payment text'))),
+    el('div', { class: 'card' },
+      el('div', { class: 'field-row' },
+        el('div', { class: 'field' }, el('label', {}, 'Currency symbol'), currency),
+        el('div', { class: 'field' }, el('label', {}, 'Signup bonus credits'), signupCredits)),
+      el('div', { class: 'field' }, el('label', {}, 'Payment instructions (shown when buying credits)'), paymentInfo),
+      save));
 }

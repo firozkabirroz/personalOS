@@ -19,7 +19,7 @@ export default async function paymentsView() {
           if (p.status === 'pending') {
             actions.append(
               el('button', { class: 'btn success sm', onclick: async () => {
-                try { const r = await post(`/admin/payments/${p.id}/approve`); toast(`Approved — valid until ${fmtDate(r.plan_expires)} ✓`); render(); }
+                try { const r = await post(`/admin/payments/${p.id}/approve`); toast(`Approved — +${r.credits || 0} credits (balance ${r.balance}) ✓`); render(); }
                 catch (e) { toast(e.message, 'err'); }
               } }, '✓ Approve'),
               el('button', { class: 'btn danger sm', onclick: () => {
@@ -32,8 +32,8 @@ export default async function paymentsView() {
           return el('tr', {},
             el('td', { class: 'muted' }, fmtDate(p.created_at?.slice(0, 10))),
             el('td', {}, el('b', {}, p.username), p.name && p.name !== p.username ? el('div', { class: 'muted' }, p.name) : null),
-            el('td', {}, el('span', { class: 'badge accent' }, p.tier_key || '—')),
-            el('td', {}, p.plan),
+            el('td', {}, el('span', { class: 'badge accent' }, p.pack_key || p.tier_key || '—')),
+            el('td', {}, p.credits ? `+${p.credits}c` : p.plan),
             el('td', {}, fmtMoney(p.amount, cur)),
             el('td', {}, el('div', {}, p.method), el('div', { class: 'muted', style: { fontFamily: 'monospace' } }, p.trx_id)),
             el('td', {}, el('span', { class: `badge ${p.status === 'approved' ? 'green' : p.status === 'pending' ? 'amber' : 'red'}` }, p.status)),
@@ -44,6 +44,6 @@ export default async function paymentsView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, '💳 Payments'), el('p', {}, 'Approve or reject submitted payments'))),
+      el('div', {}, el('h2', {}, 'Payments'), el('p', {}, 'Approve credit-pack purchases — credits are added instantly on approve'))),
     body);
 }

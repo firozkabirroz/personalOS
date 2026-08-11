@@ -1,5 +1,5 @@
 import { get, post, setToken, token } from '/js/api.js';
-import { el, icon, icons, toast } from '/js/ui.js';
+import { el, icon, icons, toast, skeletonPage } from '/js/ui.js';
 
 import overview from './views/overview.js';
 import users from './views/users.js';
@@ -22,7 +22,7 @@ const NAV = [
   { group: 'Customers', roles: ['owner', 'manager'], items: [
     { route: 'users', label: 'Users', icon: 'team', view: users },
     { route: 'payments', label: 'Payments', icon: 'card', view: payments },
-    { route: 'plans', label: 'Plans', icon: 'finance', view: plans },
+    { route: 'plans', label: 'Credit Packs', icon: 'finance', view: plans },
   ]},
   { group: 'Platform', roles: ['owner', 'manager'], items: [
     { route: 'ai', label: 'AI Models', icon: 'ai', view: aiModels },
@@ -146,6 +146,7 @@ export function navigate(route) {
   location.hash = '#/' + route;
 }
 
+let routeToken = 0;
 async function renderRoute() {
   closeDrawer();
   const role = currentUser.role;
@@ -154,13 +155,20 @@ async function renderRoute() {
   const candidate = ROUTES[requested] && allowed(ROUTES[requested], role) ? requested : fallback;
   const item = ROUTES[candidate] && allowed(ROUTES[candidate], role) ? ROUTES[candidate] : ROUTES['support'];
   for (const [r, b] of Object.entries(shell.navButtons || {})) b.classList.toggle('active', r === (ROUTES[candidate] ? candidate : 'support'));
+  const myToken = ++routeToken;
   mainEl.innerHTML = '';
   mainEl.scrollTop = 0;
+  mainEl.append(skeletonPage());
   try {
     const view = await item.view();
+    if (myToken !== routeToken) return;
+    view.classList.add('view-enter');
+    mainEl.innerHTML = '';
     mainEl.append(view);
   } catch (e) {
+    if (myToken !== routeToken) return;
     console.error(e);
+    mainEl.innerHTML = '';
     mainEl.append(el('div', { class: 'empty' }, el('div', { class: 'big' }, '⚠️'), 'Failed to load: ' + e.message));
   }
 }

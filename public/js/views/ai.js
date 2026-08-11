@@ -1,5 +1,5 @@
-import { get, post, del } from '../api.js';
-import { el, icon, confirmModal, toast } from '../ui.js';
+import { get, post, del, api } from '../api.js';
+import { el, icon, icons, confirmModal, toast, renderMarkdown } from '../ui.js';
 import { navigate } from '../app.js';
 
 const SUGGESTIONS = [
@@ -11,25 +11,75 @@ const SUGGESTIONS = [
 ];
 
 export default async function aiView() {
-  const settings = await get('/settings');
-  const history = await get('/ai/history');
-  let usage = await get('/ai/usage');
+  const [{ models, credits: startCredits, unlimited }, history] = await Promise.all([
+    get('/ai/models'),
+    get('/ai/history'),
+  ]);
+  let credits = startCredits || 0;
+  let selectedModelId = models.find(m => m.is_free)?.id || models[0]?.id || null;
+  let pendingFiles = [];
 
   const scroll = el('div', { class: 'chat-scroll' });
-  const usageBadge = el('span', {});
-  function renderUsageBadge() {
-    if (usage.unlimited) { usageBadge.textContent = ''; return; }
-    const over = usage.remaining <= 0;
-    usageBadge.innerHTML = '';
-    usageBadge.append(el('span', { class: `badge ${over ? 'red' : usage.remaining <= 5 ? 'amber' : 'accent'}` },
-      `${usage.tier?.name || 'Free'} · ${usage.used}/${usage.tier?.limit ?? 0} AI মেসেজ`));
-  }
-  renderUsageBadge();
+  const creditBadge = el('span', {});
 
-  function bubble(role, text) {
+  function syncSidebarChip() {
+    const chip = document.querySelector('.credits-chip b');
+    if (chip) chip.textContent = String(credits);
+  }
+
+  function renderCreditBadge() {
+    creditBadge.innerHTML = '';
+    if (unlimited) {
+      creditBadge.append(el('span', { class: 'badge green' }, 'Unlimited'));
+      return;
+    }
+    const m = models.find(x => x.id === selectedModelId);
+    creditBadge.append(
+      el('span', { class: `badge ${credits > 0 ? 'accent' : 'amber'}` }, `⚡ ${credits}`),
+      m && !m.is_free ? el('span', { class: 'badge', style: { marginLeft: '6px' } }, `−${m.credit_cost}/msg`) : null,
+    );
+  }
+
+  const modelSelect = el('select', {
+    class: 'model-pill',
+    title: 'Switch AI model',
+    onchange: (e) => { selectedModelId = Number(e.target.value); renderCreditBadge(); },
+  });
+  for (const m of models) {
+    const label = m.is_free ? `${m.name} · Free` : `${m.name} · ${m.credit_cost}c`;
+    modelSelect.append(el('option', { value: m.id, selected: m.id === selectedModelId }, label));
+  }
+  renderCreditBadge();
+
+  function aiAvatar() {
+    const who = el('div', { class: 'who' });
+    who.innerHTML = icons.ai;
+    return who;
+  }
+
+  function bubble(role, text, { meta = '', images = [], files = [] } = {}) {
+    const content = role === 'user'
+      ? el('div', { class: 'bubble' }, text)
+      : renderMarkdown(text);
+
+    const col = el('div', { class: 'msg-col' });
+    if (images.length || files.length) {
+      col.append(el('div', { class: 'attach-strip' },
+        images.map(src => el('img', { class: 'attach-thumb', src, alt: 'attachment' })),
+        files.map(name => {
+          const f = el('span', { class: 'attach-file' });
+          f.innerHTML = icons.file;
+          f.append(name);
+          return f;
+        })));
+    }
+    col.append(content);
+    if (meta) col.append(el('div', { class: 'msg-meta' }, meta));
+
     const b = el('div', { class: `msg ${role === 'user' ? 'user' : 'ai'}` },
-      el('div', { class: 'who' }, role === 'user' ? 'Y' : 'AI'),
-      el('div', { class: 'bubble' }, text));
+      role === 'user' ? el('div', { class: 'who' }, 'Y') : aiAvatar(),
+      col);
+
     if (role !== 'user') {
       const tg = el('button', {
         class: 'icon-btn', title: 'Send this answer to my Telegram',
@@ -48,54 +98,97 @@ export default async function aiView() {
 
   function scrollDown() { scroll.scrollTop = scroll.scrollHeight; }
 
-  if (!history.length) {
-    scroll.append(el('div', { style: { textAlign: 'center', padding: '30px 16px', color: 'var(--text-dim)' } },
-      el('div', { style: { fontSize: '38px', marginBottom: '10px' } }, '🤖'),
-      el('h3', { style: { color: 'var(--text)', marginBottom: '6px' } }, 'Your personal AI'),
-      el('p', { style: { fontSize: '13px', maxWidth: '440px', margin: '0 auto 18px' } },
-        'It can see your tasks, projects, plans, ideas, expenses, habits, health log, trips and calendar — ask anything about your life and work.'),
+  function welcomeScreen() {
+    const heroIc = el('div', { class: 'hero-ic' });
+    heroIc.innerHTML = icons.sparkles;
+    return el('div', { class: 'welcome-hero' },
+      heroIc,
+      el('h3', {}, 'Your personal AI'),
+      el('p', {}, 'It can see your tasks, projects, expenses, habits and more. Free models are unlimited — switch to a stronger model anytime with credits. Attach files if you want.'),
       el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center' } },
-        SUGGESTIONS.map(s => el('button', { class: 'btn ghost sm', onclick: () => { input.value = s; send(); } }, s))),
-      (!usage.unlimited && usage.remaining <= 0 && !usage.hasOwnKey) ? el('p', { style: { marginTop: '20px' } },
-        el('span', { class: 'badge red' }, '⚠ এই মাসের AI মেসেজ শেষ'), ' ',
-        el('a', { style: { cursor: 'pointer' }, onclick: () => navigate('billing') }, 'প্ল্যান আপগ্রেড করুন →')) : null,
-    ));
-  } else {
-    history.forEach(m => scroll.append(bubble(m.role, m.content)));
+        SUGGESTIONS.map(s => el('button', { class: 'btn ghost sm', onclick: () => { input.value = s; send(); } }, s))));
   }
 
-  const input = el('textarea', { rows: 1, placeholder: 'Ask about your data… (Enter to send, Shift+Enter for new line)' });
+  if (!history.length) {
+    scroll.append(welcomeScreen());
+  } else {
+    history.forEach(m => {
+      let files = [];
+      try {
+        const at = m.attachments ? JSON.parse(m.attachments) : [];
+        files = at.map(a => a.name);
+      } catch {}
+      scroll.append(bubble(m.role, m.content, { files }));
+    });
+  }
+
+  const input = el('textarea', { rows: 1, placeholder: 'Ask about your data… (Enter to send)' });
   input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 140) + 'px'; });
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+
+  const fileInput = el('input', { type: 'file', multiple: true, accept: 'image/*,.pdf,.txt', style: { display: 'none' } });
+  const fileChips = el('div', { class: 'chat-file-chips', style: { display: 'none' } });
+  function renderFiles() {
+    fileChips.innerHTML = '';
+    fileChips.style.display = pendingFiles.length ? 'flex' : 'none';
+    pendingFiles.forEach((f, i) => {
+      fileChips.append(el('span', { class: 'chat-file-chip' },
+        f.name.length > 26 ? f.name.slice(0, 24) + '…' : f.name,
+        el('button', { onclick: () => { pendingFiles.splice(i, 1); renderFiles(); } }, '×')));
+    });
+  }
+  fileInput.addEventListener('change', () => {
+    pendingFiles = [...pendingFiles, ...Array.from(fileInput.files || [])].slice(0, 4);
+    fileInput.value = '';
+    renderFiles();
+  });
+
+  const attachBtn = el('button', { class: 'icon-btn', type: 'button', title: 'Attach image / PDF / text', onclick: () => fileInput.click() });
+  attachBtn.innerHTML = icons.paperclip;
 
   const sendBtn = el('button', { class: 'btn', onclick: () => send() }, icon('send'), 'Send');
 
   let busy = false;
   async function send() {
     const text = input.value.trim();
-    if (!text || busy) return;
+    if ((!text && !pendingFiles.length) || busy) return;
     busy = true;
     input.value = '';
     input.style.height = 'auto';
     sendBtn.disabled = true;
-    // clear welcome screen on first message
-    if (scroll.querySelector('h3')) scroll.innerHTML = '';
-    scroll.append(bubble('user', text));
-    const typing = el('div', { class: 'msg ai' }, el('div', { class: 'who' }, 'AI'),
+    if (scroll.querySelector('.welcome-hero')) scroll.innerHTML = '';
+
+    const filesSnapshot = pendingFiles.slice();
+    pendingFiles = [];
+    renderFiles();
+
+    const images = filesSnapshot.filter(f => f.type.startsWith('image/')).map(f => URL.createObjectURL(f));
+    const otherFiles = filesSnapshot.filter(f => !f.type.startsWith('image/')).map(f => f.name);
+    scroll.append(bubble('user', text || '(attachment)', { images, files: otherFiles }));
+
+    const typing = el('div', { class: 'msg ai' }, aiAvatar(),
       el('div', { class: 'bubble' }, el('span', { class: 'typing' }, el('span'), el('span'), el('span'))));
     scroll.append(typing);
     scrollDown();
+
     try {
-      const r = await post('/ai/chat', { message: text });
+      const fd = new FormData();
+      fd.append('message', text);
+      if (selectedModelId) fd.append('model_id', String(selectedModelId));
+      for (const f of filesSnapshot) fd.append('files', f);
+
+      const r = await api('/ai/chat', { method: 'POST', body: fd });
       typing.remove();
-      scroll.append(bubble('assistant', r.reply));
-      if (r.usage) { usage = { ...usage, used: r.usage.used + 1, remaining: r.usage.remaining }; renderUsageBadge(); }
+      const meta = r.model ? `${r.model.name}${r.charged ? ` · −${r.charged} credit${r.charged > 1 ? 's' : ''}` : ' · Free'}` : '';
+      scroll.append(bubble('assistant', r.reply, { meta }));
+      if (typeof r.credits === 'number') { credits = r.credits; renderCreditBadge(); syncSidebarChip(); }
     } catch (e) {
       typing.remove();
       scroll.append(el('div', { class: 'msg ai' }, el('div', { class: 'who' }, '!'),
-        el('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+        el('div', { class: 'msg-col' },
           el('div', { class: 'bubble', style: { borderColor: 'rgba(239,68,68,.4)', color: '#fca5a5' } }, e.message),
-          e.limitReached ? el('a', { style: { cursor: 'pointer', fontSize: '13px' }, onclick: () => navigate('billing') }, 'প্ল্যান আপগ্রেড করুন →') : null)));
+          e.needsCredits ? el('div', { class: 'msg-meta' },
+            el('a', { style: { cursor: 'pointer' }, onclick: () => navigate('billing') }, 'Buy credits →')) : null)));
     }
     busy = false;
     sendBtn.disabled = false;
@@ -103,7 +196,7 @@ export default async function aiView() {
     input.focus();
   }
 
-  const clearBtn = el('button', { class: 'btn ghost', onclick: () => confirmModal('Clear the whole conversation history?', async () => {
+  const clearBtn = el('button', { class: 'btn ghost sm', onclick: () => confirmModal('Clear the whole conversation history?', async () => {
     await del('/ai/history');
     toast('Conversation cleared');
     navigate('ai');
@@ -115,9 +208,15 @@ export default async function aiView() {
   return el('div', {},
     el('div', { class: 'page-head', style: { marginBottom: '12px' } },
       el('div', {}, el('h2', {}, 'AI Assistant'),
-        el('p', {}, usage.hasOwnKey ? `Using your own key: ${settings.ai_provider || 'anthropic'}${settings.ai_model ? ' · ' + settings.ai_model : ''}` : 'Included with your subscription plan')),
-      el('div', { class: 'page-actions' }, usageBadge, clearBtn)),
+        el('p', {}, 'Free models cost nothing — switch models or attach files right from the composer')),
+      el('div', { class: 'page-actions' }, creditBadge, clearBtn)),
     el('div', { class: 'chat-wrap' },
       scroll,
-      el('div', { class: 'chat-input' }, input, sendBtn)));
+      el('div', { class: 'chat-input' },
+        fileChips,
+        el('div', { class: 'chat-input-row' },
+          fileInput,
+          el('div', { class: 'chat-tools' }, attachBtn, modelSelect),
+          input,
+          sendBtn))));
 }

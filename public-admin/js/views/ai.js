@@ -26,35 +26,37 @@ export default async function aiModelsView() {
       toast('Platform AI keys saved ✓'); render();
     } }, 'Save platform keys');
 
-    const modelFields = (values = {}) => [
+    const modelFields = () => [
       { key: 'name', label: 'Display name', placeholder: 'e.g. GPT-4o mini' },
       { key: 'provider', label: 'Provider', type: 'select', options: [{ value: 'anthropic', label: 'Anthropic' }, { value: 'openai', label: 'OpenAI' }, { value: 'custom', label: 'Custom (OpenAI-compatible)' }], default: 'openai' },
       { key: 'model_id', label: 'Model ID (exact API string)', placeholder: 'e.g. gpt-4o-mini' },
-      { key: 'input_cost', label: 'Input $/1M tokens', type: 'number', step: '0.01', half: true, default: 0 },
-      { key: 'output_cost', label: 'Output $/1M tokens', type: 'number', step: '0.01', half: true, default: 0 },
+      { key: 'is_free', label: 'Access', type: 'select', options: [{ value: '1', label: 'Free (unlimited for users)' }, { value: '0', label: 'Paid (uses credits)' }], default: '0' },
+      { key: 'credit_cost', label: 'Credits per message (paid only)', type: 'number', step: '1', half: true, default: 1 },
+      { key: 'input_cost', label: 'Input $/1M tokens (ref)', type: 'number', step: '0.01', half: true, default: 0 },
+      { key: 'output_cost', label: 'Output $/1M tokens (ref)', type: 'number', step: '0.01', half: true, default: 0 },
     ];
 
     const addModel = () => formModal({
       title: 'Add AI model', fields: modelFields(), submitLabel: 'Add',
       onSubmit: async (v) => {
         if (!v.name.trim() || !v.model_id.trim()) throw new Error('Name and model ID are required');
-        await post('/admin/ai-models', v); toast('Model added ✓'); render();
+        await post('/admin/ai-models', { ...v, is_free: v.is_free === '1' || v.is_free === 1 }); toast('Model added ✓'); render();
       },
     });
     const editModel = (m) => formModal({
-      title: `Edit "${m.name}"`, fields: modelFields(m), values: m,
-      onSubmit: async (v) => { await put(`/admin/ai-models/${m.id}`, v); toast('Updated ✓'); render(); },
+      title: `Edit "${m.name}"`, fields: modelFields(), values: { ...m, is_free: m.is_free ? '1' : '0' },
+      onSubmit: async (v) => { await put(`/admin/ai-models/${m.id}`, { ...v, is_free: v.is_free === '1' || v.is_free === 1 }); toast('Updated ✓'); render(); },
     });
 
     body.replaceChildren(el('div', {},
       el('div', { class: 'card', style: { marginBottom: '16px' } },
-        el('h3', {}, '🔑 Platform AI keys'),
-        el('p', { class: 'muted', style: { marginTop: '-8px', marginBottom: '14px' } }, 'One key per provider covers every model of that provider below — used for all customers\' AI chats (billed to you, limited per plan).'),
+        el('h3', {}, 'Platform AI keys'),
+        el('p', { class: 'muted', style: { marginTop: '-8px', marginBottom: '14px' } }, 'One key per provider covers every model below — users never paste their own keys. Free models are unlimited; paid models debit user credits.'),
         el('div', { class: 'field-row' }, kAnthropic.el, kOpenai.el),
         el('div', { class: 'field-row' }, kCustom.el, kCustomUrl.el),
         saveKeys),
       el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' } },
-        el('h3', { style: { margin: 0 } }, '🤖 Model catalog'),
+        el('h3', { style: { margin: 0 } }, 'Model catalog'),
         el('button', { class: 'btn', onclick: addModel }, icon('plus'), 'Add model')),
       el('div', { class: 'grid cols-3' }, models.map(m => {
         const editBtn = el('button', { class: 'icon-btn', onclick: () => editModel(m) }); editBtn.innerHTML = icons.edit;
@@ -65,9 +67,10 @@ export default async function aiModelsView() {
         return el('div', { class: 'card', style: { display: 'flex', flexDirection: 'column', gap: '6px', opacity: m.active ? 1 : 0.55 } },
           el('div', { style: { display: 'flex', justifyContent: 'space-between' } },
             el('b', {}, m.name), el('div', { style: { display: 'flex', gap: '4px' } }, editBtn, delBtn)),
-          el('div', { class: 'badge accent', style: { width: 'fit-content' } }, PROVIDER_LABEL[m.provider]),
+          el('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
+            el('span', { class: 'badge accent' }, PROVIDER_LABEL[m.provider]),
+            el('span', { class: `badge ${m.is_free ? 'green' : 'amber'}` }, m.is_free ? 'Free' : `${m.credit_cost} credit/msg`)),
           el('div', { class: 'muted', style: { fontFamily: 'monospace', fontSize: '12px' } }, m.model_id),
-          el('div', { class: 'muted', style: { fontSize: '12px' } }, `$${m.input_cost}/$${m.output_cost} per 1M tokens`),
           toggleBtn);
       }))));
   }
@@ -75,6 +78,6 @@ export default async function aiModelsView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, '🤖 AI Models'), el('p', {}, 'Platform provider keys and the model catalog used across plans'))),
+      el('div', {}, el('h2', {}, 'AI Models'), el('p', {}, 'Platform keys + free/paid model catalog'))),
     body);
 }

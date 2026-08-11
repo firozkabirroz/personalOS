@@ -33,7 +33,7 @@ export default async function activityView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, '🕐 Activity'), el('p', {}, 'Platform-wide event feed — signups, payments, connections, tickets')),
+      el('div', {}, el('h2', {}, 'Activity'), el('p', {}, 'Platform-wide event feed — signups, payments, connections, tickets')),
       el('div', { class: 'page-actions' }, filterSelect)),
     body);
 }
