@@ -7,10 +7,15 @@ const path = require('path');
 const { db, DATA_DIR } = require('./db');
 const { getPlatformSetting, logActivity } = require('./platform');
 
-// Persistent JWT secret so sessions survive server restarts
+// Persistent JWT secret so sessions survive server restarts.
+// On serverless hosts (Vercel) set the JWT_SECRET env var instead — the
+// filesystem there is ephemeral, so a file-based secret would rotate on
+// every cold start and log everyone out.
 const SECRET_FILE = path.join(DATA_DIR, '.jwt-secret');
 let JWT_SECRET;
-if (fs.existsSync(SECRET_FILE)) {
+if (process.env.JWT_SECRET) {
+  JWT_SECRET = process.env.JWT_SECRET;
+} else if (fs.existsSync(SECRET_FILE)) {
   JWT_SECRET = fs.readFileSync(SECRET_FILE, 'utf8');
 } else {
   JWT_SECRET = crypto.randomBytes(48).toString('hex');

@@ -47,9 +47,10 @@ Open **/admin** (owner account created on first register).
 
 ## Hosting
 
-- **[HOSTING.md](HOSTING.md)** — Oracle Cloud (always-free VM)
+- **[HOSTING.md](HOSTING.md)** — Oracle Cloud (always-free VM, persistent data — best for production)
+- **[RAILWAY.md](RAILWAY.md)** — Railway (persistent volume)
 - **[AWS-HOSTING.md](AWS-HOSTING.md)** — AWS EC2
-- **[RAILWAY.md](RAILWAY.md)** — Railway
+- **[VERCEL.md](VERCEL.md)** — Vercel (one-click, **demo/preview only** — SQLite data is ephemeral on serverless)
 
 ## Notes
 

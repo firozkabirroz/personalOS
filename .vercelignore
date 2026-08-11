@@ -1,0 +1,10 @@
+data/
+*.zip
+*.db
+*.db-shm
+*.db-wal
+Dockerfile
+railway.toml
+HOSTING.md
+AWS-HOSTING.md
+RAILWAY.md

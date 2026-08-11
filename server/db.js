@@ -2,7 +2,11 @@ const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+// DATA_DIR override (e.g. a mounted volume). On Vercel the project directory
+// is read-only — only /tmp is writable, so the DB lives there (ephemeral:
+// fine for previews/demos, use a real host for production data).
+const DATA_DIR = process.env.DATA_DIR
+  || (process.env.VERCEL ? '/tmp/personal-os-data' : path.join(__dirname, '..', 'data'));
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const db = new Database(path.join(DATA_DIR, 'personal-os.db'));
