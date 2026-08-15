@@ -17,8 +17,8 @@ function redirectUri(req) {
   return `${req.protocol}://${req.get('host')}/api/google/callback`;
 }
 
-router.get('/google/auth-url', (req, res) => {
-  const clientId = getPlatformSetting('platform_google_client_id');
+router.get('/google/auth-url', async (req, res) => {
+  const clientId = await getPlatformSetting('platform_google_client_id');
   if (!clientId) return res.status(400).json({ error: 'Google isn\'t set up by the admin yet. Ask them to configure it in Admin → Integrations.' });
   const url = 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
     client_id: clientId,
@@ -37,8 +37,8 @@ router.get('/google/callback', async (req, res) => {
   const { code, state, error } = req.query;
   if (error || !code) return res.send(`<script>window.close()</script>Google authorization failed: ${error || 'no code'}`);
   const uid = parseInt(state, 10);
-  const clientId = getPlatformSetting('platform_google_client_id');
-  const clientSecret = getPlatformSetting('platform_google_client_secret');
+  const clientId = await getPlatformSetting('platform_google_client_id');
+  const clientSecret = await getPlatformSetting('platform_google_client_secret');
   try {
     const resp = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
@@ -51,8 +51,8 @@ router.get('/google/callback', async (req, res) => {
     const tokens = await resp.json();
     if (!resp.ok) throw new Error(tokens.error_description || tokens.error);
     tokens.obtained_at = Date.now();
-    setSetting(uid, 'google_tokens', JSON.stringify(tokens));
-    logActivity({ userId: uid, type: 'google_connected', message: 'Connected Google Calendar/Drive' });
+    await setSetting(uid, 'google_tokens', JSON.stringify(tokens));
+    await logActivity({ userId: uid, type: 'google_connected', message: 'Connected Google Calendar/Drive' });
     res.send('<body style="font-family:sans-serif;background:#0f1117;color:#e2e4ea;display:grid;place-items:center;height:100vh"><div><h2>✅ Google connected</h2><p>You can close this window and return to Personal OS.</p></div></body>');
   } catch (e) {
     res.send(`<body style="font-family:sans-serif"><h3>Google connection failed</h3><p>${e.message}</p></body>`);
@@ -60,7 +60,7 @@ router.get('/google/callback', async (req, res) => {
 });
 
 async function googleToken(uid) {
-  const raw = getSetting(uid, 'google_tokens');
+  const raw = await getSetting(uid, 'google_tokens');
   if (!raw) throw new Error('Google is not connected. Go to Settings → Integrations.');
   let tokens = JSON.parse(raw);
   const expired = !tokens.obtained_at || (Date.now() - tokens.obtained_at) > (tokens.expires_in - 120) * 1000;
@@ -70,15 +70,15 @@ async function googleToken(uid) {
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         refresh_token: tokens.refresh_token,
-        client_id: getPlatformSetting('platform_google_client_id'),
-        client_secret: getPlatformSetting('platform_google_client_secret'),
+        client_id: await getPlatformSetting('platform_google_client_id'),
+        client_secret: await getPlatformSetting('platform_google_client_secret'),
         grant_type: 'refresh_token',
       }),
     });
     const fresh = await resp.json();
     if (!resp.ok) throw new Error('Google token refresh failed — reconnect in Settings.');
     tokens = { ...tokens, ...fresh, obtained_at: Date.now() };
-    setSetting(uid, 'google_tokens', JSON.stringify(tokens));
+    await setSetting(uid, 'google_tokens', JSON.stringify(tokens));
   }
   return tokens.access_token;
 }
@@ -94,13 +94,13 @@ router.post('/google/calendar/sync', async (req, res) => {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data?.error?.message || 'Calendar API error');
 
-    db.prepare("DELETE FROM events WHERE user_id=? AND source='google'").run(req.userId);
+    await db.prepare("DELETE FROM events WHERE user_id=? AND source='google'").run(req.userId);
     const insert = db.prepare('INSERT INTO events (user_id, title, date, start_time, end_time, source, external_id, notes) VALUES (?,?,?,?,?,?,?,?)');
     let count = 0;
     for (const ev of data.items || []) {
       const start = ev.start?.dateTime || ev.start?.date || '';
       const end = ev.end?.dateTime || '';
-      insert.run(req.userId, ev.summary || '(no title)', start.slice(0, 10),
+      await insert.run(req.userId, ev.summary || '(no title)', start.slice(0, 10),
         start.length > 10 ? start.slice(11, 16) : '', end.length > 10 ? end.slice(11, 16) : '',
         'google', ev.id, ev.location || '');
       count++;
@@ -129,7 +129,7 @@ router.get('/google/drive/list', async (req, res) => {
 // Upload one of the stored project files to Google Drive
 router.post('/google/drive/upload/:fileId', async (req, res) => {
   try {
-    const file = db.prepare('SELECT * FROM files WHERE id=? AND user_id=?').get(req.params.fileId, req.userId);
+    const file = await db.prepare('SELECT * FROM files WHERE id=? AND user_id=?').get(req.params.fileId, req.userId);
     if (!file) return res.status(404).json({ error: 'File not found' });
     const token = await googleToken(req.userId);
     const content = fs.readFileSync(path.join(UPLOAD_DIR, file.filename));
@@ -158,8 +158,8 @@ function notionRedirectUri(req) {
   return `${req.protocol}://${req.get('host')}/api/notion/callback`;
 }
 
-router.get('/notion/auth-url', (req, res) => {
-  const clientId = getPlatformSetting('platform_notion_client_id');
+router.get('/notion/auth-url', async (req, res) => {
+  const clientId = await getPlatformSetting('platform_notion_client_id');
   if (!clientId) return res.status(400).json({ error: 'Notion isn\'t set up by the admin yet. Ask them to configure it in Admin → Integrations.' });
   const url = 'https://api.notion.com/v1/oauth/authorize?' + new URLSearchParams({
     client_id: clientId,
@@ -175,8 +175,8 @@ router.get('/notion/callback', async (req, res) => {
   const { code, state, error } = req.query;
   if (error || !code) return res.send(`<script>window.close()</script>Notion authorization failed: ${error || 'no code'}`);
   const uid = parseInt(state, 10);
-  const clientId = getPlatformSetting('platform_notion_client_id');
-  const clientSecret = getPlatformSetting('platform_notion_client_secret');
+  const clientId = await getPlatformSetting('platform_notion_client_id');
+  const clientSecret = await getPlatformSetting('platform_notion_client_secret');
   try {
     const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
     const resp = await fetch('https://api.notion.com/v1/oauth/token', {
@@ -194,17 +194,17 @@ router.get('/notion/callback', async (req, res) => {
     const tokens = await resp.json();
     if (!resp.ok) throw new Error(tokens.error_description || tokens.message || tokens.error || 'Token exchange failed');
     // Notion OAuth returns access_token (no refresh for most public integrations)
-    setSetting(uid, 'notion_token', tokens.access_token);
-    setSetting(uid, 'notion_tokens', JSON.stringify({ ...tokens, obtained_at: Date.now() }));
-    logActivity({ userId: uid, type: 'notion_connected', message: 'Connected Notion via OAuth' });
+    await setSetting(uid, 'notion_token', tokens.access_token);
+    await setSetting(uid, 'notion_tokens', JSON.stringify({ ...tokens, obtained_at: Date.now() }));
+    await logActivity({ userId: uid, type: 'notion_connected', message: 'Connected Notion via OAuth' });
     res.send('<body style="font-family:sans-serif;background:#0f1117;color:#e2e4ea;display:grid;place-items:center;height:100vh"><div><h2>✅ Notion connected</h2><p>You can close this window and return to Personal OS.</p></div></body>');
   } catch (e) {
     res.send(`<body style="font-family:sans-serif"><h3>Notion connection failed</h3><p>${e.message}</p></body>`);
   }
 });
 
-function notionHeaders(uid) {
-  const token = getSetting(uid, 'notion_token');
+async function notionHeaders(uid) {
+  const token = await getSetting(uid, 'notion_token');
   if (!token) throw new Error('Notion is not connected. Go to Settings and tap Connect Notion.');
   return {
     authorization: `Bearer ${token}`,
@@ -217,7 +217,7 @@ router.get('/notion/search', async (req, res) => {
   try {
     const resp = await fetch('https://api.notion.com/v1/search', {
       method: 'POST',
-      headers: notionHeaders(req.userId),
+      headers: await notionHeaders(req.userId),
       body: JSON.stringify({ query: req.query.q || '', page_size: 25, filter: { value: 'page', property: 'object' } }),
     });
     const data = await resp.json();
@@ -236,7 +236,7 @@ router.get('/notion/search', async (req, res) => {
 async function notionBlockText(uid, blockId, depth = 0) {
   if (depth > 2) return '';
   const resp = await fetch(`https://api.notion.com/v1/blocks/${blockId}/children?page_size=100`, {
-    headers: notionHeaders(uid),
+    headers: await notionHeaders(uid),
   });
   const data = await resp.json();
   if (!resp.ok) throw new Error(data?.message || 'Notion API error');
@@ -265,9 +265,9 @@ router.post('/notion/import', async (req, res) => {
   if (!page_id) return res.status(400).json({ error: 'page_id required' });
   try {
     const content = await notionBlockText(req.userId, page_id);
-    const info = db.prepare('INSERT INTO ideas (user_id, title, content, tags, color) VALUES (?,?,?,?,?)')
+    const info = await db.prepare('INSERT INTO ideas (user_id, title, content, tags, color) VALUES (?,?,?,?,?)')
       .run(req.userId, title || 'Notion import', content || '(empty page)', 'notion', '#8b5cf6');
-    res.json(db.prepare('SELECT * FROM ideas WHERE id=?').get(info.lastInsertRowid));
+    res.json(await db.prepare('SELECT * FROM ideas WHERE id=?').get(info.lastInsertRowid));
   } catch (e) {
     res.status(502).json({ error: e.message });
   }

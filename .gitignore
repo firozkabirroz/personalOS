@@ -7,3 +7,6 @@ data/
 uploads/
 *.zip
 .jwt-secret
+.vercel
+.env*
+.neon-url

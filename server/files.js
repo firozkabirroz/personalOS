@@ -19,45 +19,45 @@ const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } });
 
 const router = express.Router();
 
-router.get('/files', (req, res) => {
+router.get('/files', async (req, res) => {
   let sql = `SELECT f.*, p.name AS project_name, p.color AS project_color
              FROM files f LEFT JOIN projects p ON p.id = f.project_id
              WHERE f.user_id = ?`;
   const params = [req.userId];
   if (req.query.project_id) { sql += ' AND f.project_id = ?'; params.push(req.query.project_id); }
   sql += ' ORDER BY f.created_at DESC';
-  res.json(db.prepare(sql).all(...params));
+  res.json(await db.prepare(sql).all(...params));
 });
 
-router.post('/files', upload.array('files', 20), (req, res) => {
+router.post('/files', upload.array('files', 20), async (req, res) => {
   const projectId = req.body.project_id || null;
   const saved = [];
   for (const f of req.files || []) {
-    const info = db.prepare(`INSERT INTO files (user_id, project_id, filename, original, mime, size)
+    const info = await db.prepare(`INSERT INTO files (user_id, project_id, filename, original, mime, size)
       VALUES (?,?,?,?,?,?)`).run(req.userId, projectId, f.filename, f.originalname, f.mimetype, f.size);
-    saved.push(db.prepare('SELECT * FROM files WHERE id=?').get(info.lastInsertRowid));
+    saved.push(await db.prepare('SELECT * FROM files WHERE id=?').get(info.lastInsertRowid));
   }
   res.json(saved);
 });
 
-router.get('/files/:id/download', (req, res) => {
-  const file = db.prepare('SELECT * FROM files WHERE id=? AND user_id=?').get(req.params.id, req.userId);
+router.get('/files/:id/download', async (req, res) => {
+  const file = await db.prepare('SELECT * FROM files WHERE id=? AND user_id=?').get(req.params.id, req.userId);
   if (!file) return res.status(404).json({ error: 'File not found' });
   res.download(path.join(UPLOAD_DIR, file.filename), file.original);
 });
 
-router.put('/files/:id', (req, res) => {
-  const file = db.prepare('SELECT * FROM files WHERE id=? AND user_id=?').get(req.params.id, req.userId);
+router.put('/files/:id', async (req, res) => {
+  const file = await db.prepare('SELECT * FROM files WHERE id=? AND user_id=?').get(req.params.id, req.userId);
   if (!file) return res.status(404).json({ error: 'File not found' });
-  db.prepare('UPDATE files SET project_id=? WHERE id=?').run(req.body.project_id || null, file.id);
-  res.json(db.prepare('SELECT * FROM files WHERE id=?').get(file.id));
+  await db.prepare('UPDATE files SET project_id=? WHERE id=?').run(req.body.project_id || null, file.id);
+  res.json(await db.prepare('SELECT * FROM files WHERE id=?').get(file.id));
 });
 
-router.delete('/files/:id', (req, res) => {
-  const file = db.prepare('SELECT * FROM files WHERE id=? AND user_id=?').get(req.params.id, req.userId);
+router.delete('/files/:id', async (req, res) => {
+  const file = await db.prepare('SELECT * FROM files WHERE id=? AND user_id=?').get(req.params.id, req.userId);
   if (!file) return res.status(404).json({ error: 'File not found' });
   try { fs.unlinkSync(path.join(UPLOAD_DIR, file.filename)); } catch {}
-  db.prepare('DELETE FROM files WHERE id=?').run(file.id);
+  await db.prepare('DELETE FROM files WHERE id=?').run(file.id);
   res.json({ ok: true });
 });
 

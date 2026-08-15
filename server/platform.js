@@ -1,17 +1,18 @@
 const { db, getSetting, setSetting, logActivity } = require('./db');
 
-function ownerId() {
-  return db.prepare("SELECT id FROM users WHERE role='owner' ORDER BY id ASC LIMIT 1").get()?.id || null;
+async function ownerId() {
+  const row = await db.prepare("SELECT id FROM users WHERE role='owner' ORDER BY id ASC LIMIT 1").get();
+  return row?.id || null;
 }
 
-function getPlatformSetting(key) {
-  const oid = ownerId();
+async function getPlatformSetting(key) {
+  const oid = await ownerId();
   return oid ? getSetting(oid, key) : '';
 }
 
-function setPlatformSetting(key, value) {
-  const oid = ownerId();
-  if (oid) setSetting(oid, key, value);
+async function setPlatformSetting(key, value) {
+  const oid = await ownerId();
+  if (oid) await setSetting(oid, key, value);
 }
 
 function mask(value) {

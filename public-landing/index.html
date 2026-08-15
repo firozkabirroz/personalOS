@@ -272,23 +272,15 @@ footer .logo{justify-content:center;margin-bottom:10px}
 </footer>
 
 <script>
-// ---- Configure the app's URL here if the landing page is deployed
-// separately from the app (e.g. root domain vs. an "app." subdomain) ----
-const APP_URL = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-  ? '/'                          // local testing: app runs on the same origin
-  : 'https://app.syndaps.com';   // production: change to your app's URL
-
 document.getElementById('year').textContent = new Date().getFullYear();
 
-const join = (path) => APP_URL.replace(/\/$/, '') + path;
-document.getElementById('loginBtn').href = join('/');
+document.getElementById('loginBtn').href = '/app';
 ['signupBtnTop','signupBtnHero','signupBtnBand','signupBtnPricing'].forEach(id => {
   const el = document.getElementById(id);
-  if (el) el.href = join('/?signup=1');
+  if (el) el.href = '/app?signup=1';
 });
 
-// Show the live AI model list from the app (optional — page works without it)
-fetch(join('/api/public/pricing')).then(r => r.json()).then(cfg => {
+fetch('/api/public/pricing').then(r => r.json()).then(cfg => {
   if (cfg.models && cfg.models.length) {
     document.getElementById('freeModelsLine').textContent = cfg.models.join(', ') + ' — সব ফ্রি ও আনলিমিটেড';
   }
