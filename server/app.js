@@ -23,12 +23,12 @@ app.use(express.json({ limit: '5mb' }));
 // Standalone admin panel — mounted before the root static so it can never be
 // shadowed by a future public/admin/* file
 app.use('/admin', express.static(path.join(__dirname, '..', 'public-admin')));
-// App SPA lives at /app so the marketing landing page can own /
-const appDir = path.join(__dirname, '..', 'public');
-app.use('/app', express.static(appDir));
-app.get(['/app', '/app/'], (req, res) => res.sendFile(path.join(appDir, 'index.html')));
+// Landing is public/index.html (Vercel also serves public/ at /).
+// The app SPA lives at public/app/index.html so it cannot steal the root URL.
+const publicDir = path.join(__dirname, '..', 'public');
+app.get(['/app', '/app/'], (req, res) => res.sendFile(path.join(publicDir, 'app', 'index.html')));
 app.get('/landing', (req, res) => res.redirect('/'));
-app.use(express.static(path.join(__dirname, '..', 'public-landing')));
+app.use(express.static(publicDir));
 
 app.use('/api/auth', authRouter);
 app.use('/api', billingPublicRouter);
