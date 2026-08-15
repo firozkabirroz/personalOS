@@ -20,8 +20,8 @@ function mask(value) {
   return value.slice(0, 4) + '••••••••' + value.slice(-4);
 }
 
-router.get('/settings', (req, res) => {
-  const rows = db.prepare('SELECT key, value FROM settings WHERE user_id = ?').all(req.userId);
+router.get('/settings', async (req, res) => {
+  const rows = await db.prepare('SELECT key, value FROM settings WHERE user_id = ?').all(req.userId);
   const out = {};
   for (const r of rows) {
     if (r.key === 'google_tokens') { out.google_connected = !!r.value; continue; }
@@ -34,25 +34,25 @@ router.get('/settings', (req, res) => {
   res.json(out);
 });
 
-router.post('/settings', (req, res) => {
+router.post('/settings', async (req, res) => {
   for (const [key, value] of Object.entries(req.body || {})) {
     if (!ALLOWED_KEYS.includes(key)) continue;
     if (typeof value === 'string' && value.includes('••')) continue;
-    setSetting(req.userId, key, value);
+    await setSetting(req.userId, key, value);
   }
   res.json({ ok: true });
 });
 
-router.delete('/settings/:key', (req, res) => {
+router.delete('/settings/:key', async (req, res) => {
   if (![...ALLOWED_KEYS, 'google_tokens', 'notion_tokens'].includes(req.params.key)) {
     return res.status(400).json({ error: 'Unknown setting' });
   }
-  db.prepare('DELETE FROM settings WHERE user_id=? AND key=?').run(req.userId, req.params.key);
+  await db.prepare('DELETE FROM settings WHERE user_id=? AND key=?').run(req.userId, req.params.key);
   if (req.params.key === 'notion_tokens') {
-    db.prepare('DELETE FROM settings WHERE user_id=? AND key=?').run(req.userId, 'notion_token');
+    await db.prepare('DELETE FROM settings WHERE user_id=? AND key=?').run(req.userId, 'notion_token');
   }
   if (req.params.key === 'notion_token') {
-    db.prepare('DELETE FROM settings WHERE user_id=? AND key=?').run(req.userId, 'notion_tokens');
+    await db.prepare('DELETE FROM settings WHERE user_id=? AND key=?').run(req.userId, 'notion_tokens');
   }
   res.json({ ok: true });
 });

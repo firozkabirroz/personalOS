@@ -23,10 +23,12 @@ app.use(express.json({ limit: '5mb' }));
 // Standalone admin panel — mounted before the root static so it can never be
 // shadowed by a future public/admin/* file
 app.use('/admin', express.static(path.join(__dirname, '..', 'public-admin')));
-app.use(express.static(path.join(__dirname, '..', 'public')));
-// Marketing/sales page — served statically; on a real deployment this is
-// usually put on the root domain via a separate nginx block instead
-app.use('/landing', express.static(path.join(__dirname, '..', 'public-landing')));
+// App SPA lives at /app so the marketing landing page can own /
+const appDir = path.join(__dirname, '..', 'public');
+app.use('/app', express.static(appDir));
+app.get(['/app', '/app/'], (req, res) => res.sendFile(path.join(appDir, 'index.html')));
+app.get('/landing', (req, res) => res.redirect('/'));
+app.use(express.static(path.join(__dirname, '..', 'public-landing')));
 
 app.use('/api/auth', authRouter);
 app.use('/api', billingPublicRouter);

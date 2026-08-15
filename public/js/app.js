@@ -126,6 +126,7 @@ function authScreen(mode, hasUsers, prefillError) {
           ? el('span', {}, 'No account yet? ', el('a', { onclick: () => authScreen('register', hasUsers) }, 'Create one'))
           : el('span', {}, 'Already registered? ', el('a', { onclick: () => authScreen('login', hasUsers) }, 'Sign in')),
       ),
+      el('div', { class: 'auth-switch' }, el('a', { href: '/' }, '← Back to home')),
     ),
   ));
   setTimeout(() => (isLogin ? username : name).focus(), 50);
@@ -205,7 +206,7 @@ function logout() {
   setToken('');
   currentUser = null;
   location.hash = '';
-  boot();
+  location.href = '/';
 }
 
 // ============ Boot ============

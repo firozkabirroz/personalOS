@@ -1,6 +1,5 @@
 import { get, post, del, api } from '../api.js';
 import { el, icon, icons, confirmModal, toast, renderMarkdown } from '../ui.js';
-import { navigate } from '../app.js';
 
 const SUGGESTIONS = [
   'What should I focus on today?',
@@ -11,14 +10,17 @@ const SUGGESTIONS = [
 ];
 
 export default async function aiView() {
-  const [{ models }, history] = await Promise.all([
+  const [{ models }, conversations] = await Promise.all([
     get('/ai/models'),
-    get('/ai/history'),
+    get('/ai/conversations'),
   ]);
+  let convs = conversations;
+  let activeConvId = convs[0]?.id || null; // most recently updated first
   let selectedModelId = models[0]?.id || null;
   let pendingFiles = [];
 
   const scroll = el('div', { class: 'chat-scroll' });
+  const convStrip = el('div', { class: 'conv-strip' });
 
   const modelSelect = el('select', {
     class: 'model-pill',
@@ -82,14 +84,17 @@ export default async function aiView() {
     return el('div', { class: 'welcome-hero' },
       heroIc,
       el('h3', {}, 'Your personal AI — free & unlimited'),
-      el('p', {}, 'It can see your tasks, projects, expenses, habits and more. Switch models anytime, attach files if you want — everything is free.'),
+      el('p', {}, 'It can see your tasks, projects, expenses, habits and more. Start a new topic anytime — every conversation is saved.'),
       el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center' } },
         SUGGESTIONS.map(s => el('button', { class: 'btn ghost sm', onclick: () => { input.value = s; send(); } }, s))));
   }
 
-  if (!history.length) {
-    scroll.append(welcomeScreen());
-  } else {
+  function renderHistory(history) {
+    scroll.innerHTML = '';
+    if (!history.length) {
+      scroll.append(welcomeScreen());
+      return;
+    }
     history.forEach(m => {
       let files = [];
       try {
@@ -98,6 +103,58 @@ export default async function aiView() {
       } catch {}
       scroll.append(bubble(m.role, m.content, { files }));
     });
+    setTimeout(scrollDown, 40);
+  }
+
+  async function refreshConvs() {
+    convs = await get('/ai/conversations');
+    renderConvStrip();
+  }
+
+  function renderConvStrip() {
+    convStrip.innerHTML = '';
+
+    const newBtn = el('button', {
+      class: `conv-chip new${activeConvId === null ? ' active' : ''}`,
+      onclick: () => {
+        activeConvId = null;
+        renderConvStrip();
+        renderHistory([]);
+      },
+    }, '+ New chat');
+    convStrip.append(newBtn);
+
+    for (const c of convs) {
+      const chip = el('button', {
+        class: `conv-chip${c.id === activeConvId ? ' active' : ''}`,
+        title: c.last_message ? c.last_message.slice(0, 120) : c.title,
+        onclick: async () => {
+          if (activeConvId === c.id) return;
+          activeConvId = c.id;
+          renderConvStrip();
+          renderHistory(await get(`/ai/history?conversation_id=${c.id}`));
+        },
+      }, c.title.length > 28 ? c.title.slice(0, 26) + '…' : c.title);
+
+      if (c.id === activeConvId) {
+        chip.append(el('span', {
+          class: 'conv-del',
+          title: 'Delete this conversation',
+          onclick: (e) => {
+            e.stopPropagation();
+            confirmModal(`Delete conversation "${c.title}" and its messages?`, async () => {
+              await del(`/ai/conversations/${c.id}`);
+              toast('Conversation deleted');
+              await refreshConvs();
+              activeConvId = convs[0]?.id || null;
+              renderConvStrip();
+              renderHistory(activeConvId ? await get(`/ai/history?conversation_id=${activeConvId}`) : []);
+            });
+          },
+        }, '×'));
+      }
+      convStrip.append(chip);
+    }
   }
 
   const input = el('textarea', { rows: 1, placeholder: 'Ask about your data… (Enter to send)' });
@@ -153,11 +210,17 @@ export default async function aiView() {
       const fd = new FormData();
       fd.append('message', text);
       if (selectedModelId) fd.append('model_id', String(selectedModelId));
+      if (activeConvId) fd.append('conversation_id', String(activeConvId));
       for (const f of filesSnapshot) fd.append('files', f);
 
       const r = await api('/ai/chat', { method: 'POST', body: fd });
       typing.remove();
       scroll.append(bubble('assistant', r.reply, { meta: r.model?.name || '' }));
+      // a fresh topic was just created server-side — adopt it and show it in the strip
+      if (r.conversation && r.conversation.id !== activeConvId) {
+        activeConvId = r.conversation.id;
+      }
+      refreshConvs();
     } catch (e) {
       typing.remove();
       scroll.append(el('div', { class: 'msg ai' }, el('div', { class: 'who' }, '!'),
@@ -170,20 +233,26 @@ export default async function aiView() {
     input.focus();
   }
 
-  const clearBtn = el('button', { class: 'btn ghost sm', onclick: () => confirmModal('Clear the whole conversation history?', async () => {
-    await del('/ai/history');
-    toast('Conversation cleared');
-    navigate('ai');
-    location.reload();
-  }) }, 'Clear chat');
+  const newChatBtn = el('button', { class: 'btn sm', onclick: () => {
+    activeConvId = null;
+    renderConvStrip();
+    renderHistory([]);
+    input.focus();
+  } }, icon('plus'), 'New chat');
 
-  setTimeout(scrollDown, 60);
+  renderConvStrip();
+  if (activeConvId) {
+    renderHistory(await get(`/ai/history?conversation_id=${activeConvId}`));
+  } else {
+    renderHistory([]);
+  }
 
   return el('div', {},
     el('div', { class: 'page-head', style: { marginBottom: '12px' } },
       el('div', {}, el('h2', {}, 'AI Assistant'),
-        el('p', {}, 'Free & unlimited — switch models or attach files right from the composer')),
-      el('div', { class: 'page-actions' }, el('span', { class: 'badge green' }, 'Free · Unlimited'), clearBtn)),
+        el('p', {}, 'Every topic is its own saved conversation — start a new chat anytime')),
+      el('div', { class: 'page-actions' }, el('span', { class: 'badge green' }, 'Free · Unlimited'), newChatBtn)),
+    convStrip,
     el('div', { class: 'chat-wrap' },
       scroll,
       el('div', { class: 'chat-input' },

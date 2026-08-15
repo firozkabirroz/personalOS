@@ -37,16 +37,16 @@ const ORDER = {
 };
 
 // Auto-progress: project progress % = completed points / total points
-function recomputeProgress(uid, projectId) {
+async function recomputeProgress(uid, projectId) {
   if (!projectId) return;
-  const total = db.prepare('SELECT COUNT(*) c FROM project_items WHERE project_id=? AND user_id=?').get(projectId, uid).c;
+  const total = (await db.prepare('SELECT COUNT(*) c FROM project_items WHERE project_id=? AND user_id=?').get(projectId, uid)).c;
   if (!total) return; // no points → manual progress stays as-is
-  const done = db.prepare('SELECT COUNT(*) c FROM project_items WHERE project_id=? AND user_id=? AND done=1').get(projectId, uid).c;
-  db.prepare('UPDATE projects SET progress=? WHERE id=? AND user_id=?').run(Math.round((done / total) * 100), projectId, uid);
+  const done = (await db.prepare('SELECT COUNT(*) c FROM project_items WHERE project_id=? AND user_id=? AND done=1').get(projectId, uid)).c;
+  await db.prepare('UPDATE projects SET progress=? WHERE id=? AND user_id=?').run(Math.round((done / total) * 100), projectId, uid);
 }
 
 for (const [table, fields] of Object.entries(RESOURCES)) {
-  router.get(`/${table}`, (req, res) => {
+  router.get(`/${table}`, async (req, res) => {
     let sql = `SELECT * FROM ${table} WHERE user_id = ?`;
     const params = [req.userId];
     // simple filtering: any writable field passed as query param
@@ -54,10 +54,10 @@ for (const [table, fields] of Object.entries(RESOURCES)) {
       if (req.query[f] !== undefined) { sql += ` AND ${f} = ?`; params.push(req.query[f]); }
     }
     sql += ` ORDER BY ${ORDER[table] || 'id DESC'}`;
-    res.json(db.prepare(sql).all(...params));
+    res.json(await db.prepare(sql).all(...params));
   });
 
-  router.post(`/${table}`, (req, res) => {
+  router.post(`/${table}`, async (req, res) => {
     const cols = ['user_id'];
     const vals = [req.userId];
     for (const f of fields) {
@@ -65,15 +65,15 @@ for (const [table, fields] of Object.entries(RESOURCES)) {
     }
     const sql = `INSERT INTO ${table} (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`;
     try {
-      const info = db.prepare(sql).run(...vals);
-      if (table === 'project_items') recomputeProgress(req.userId, req.body.project_id);
-      res.json(db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(info.lastInsertRowid));
+      const info = await db.prepare(sql).run(...vals);
+      if (table === 'project_items') await recomputeProgress(req.userId, req.body.project_id);
+      res.json(await db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(info.lastInsertRowid));
     } catch (e) {
       res.status(400).json({ error: e.message });
     }
   });
 
-  router.put(`/${table}/:id`, (req, res) => {
+  router.put(`/${table}/:id`, async (req, res) => {
     const sets = [];
     const vals = [];
     for (const f of fields) {
@@ -82,90 +82,90 @@ for (const [table, fields] of Object.entries(RESOURCES)) {
     if (!sets.length) return res.status(400).json({ error: 'No fields to update' });
     if (table === 'ideas') sets.push(`updated_at = datetime('now')`);
     vals.push(req.params.id, req.userId);
-    const info = db.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`).run(...vals);
+    const info = await db.prepare(`UPDATE ${table} SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`).run(...vals);
     if (!info.changes) return res.status(404).json({ error: 'Not found' });
-    const row = db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(req.params.id);
-    if (table === 'project_items') recomputeProgress(req.userId, row.project_id);
+    const row = await db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(req.params.id);
+    if (table === 'project_items') await recomputeProgress(req.userId, row.project_id);
     res.json(row);
   });
 
-  router.delete(`/${table}/:id`, (req, res) => {
+  router.delete(`/${table}/:id`, async (req, res) => {
     const prev = table === 'project_items'
-      ? db.prepare('SELECT project_id FROM project_items WHERE id = ? AND user_id = ?').get(req.params.id, req.userId)
+      ? await db.prepare('SELECT project_id FROM project_items WHERE id = ? AND user_id = ?').get(req.params.id, req.userId)
       : null;
-    const info = db.prepare(`DELETE FROM ${table} WHERE id = ? AND user_id = ?`).run(req.params.id, req.userId);
+    const info = await db.prepare(`DELETE FROM ${table} WHERE id = ? AND user_id = ?`).run(req.params.id, req.userId);
     if (!info.changes) return res.status(404).json({ error: 'Not found' });
-    if (prev) recomputeProgress(req.userId, prev.project_id);
+    if (prev) await recomputeProgress(req.userId, prev.project_id);
     res.json({ ok: true });
   });
 }
 
 // ---- Habit logs (toggle by habit+date) ----
-router.get('/habit_logs', (req, res) => {
+router.get('/habit_logs', async (req, res) => {
   const { from, to } = req.query;
   let sql = 'SELECT * FROM habit_logs WHERE user_id = ?';
   const params = [req.userId];
   if (from) { sql += ' AND date >= ?'; params.push(from); }
   if (to) { sql += ' AND date <= ?'; params.push(to); }
-  res.json(db.prepare(sql).all(...params));
+  res.json(await db.prepare(sql).all(...params));
 });
 
-router.post('/habit_logs/toggle', (req, res) => {
+router.post('/habit_logs/toggle', async (req, res) => {
   const { habit_id, date } = req.body || {};
   if (!habit_id || !date) return res.status(400).json({ error: 'habit_id and date required' });
-  const existing = db.prepare('SELECT id FROM habit_logs WHERE user_id=? AND habit_id=? AND date=?').get(req.userId, habit_id, date);
+  const existing = await db.prepare('SELECT id FROM habit_logs WHERE user_id=? AND habit_id=? AND date=?').get(req.userId, habit_id, date);
   if (existing) {
-    db.prepare('DELETE FROM habit_logs WHERE id = ?').run(existing.id);
+    await db.prepare('DELETE FROM habit_logs WHERE id = ?').run(existing.id);
     return res.json({ done: false });
   }
-  db.prepare('INSERT INTO habit_logs (user_id, habit_id, date) VALUES (?,?,?)').run(req.userId, habit_id, date);
+  await db.prepare('INSERT INTO habit_logs (user_id, habit_id, date) VALUES (?,?,?)').run(req.userId, habit_id, date);
   res.json({ done: true });
 });
 
 // ---- Health (upsert by date) ----
-router.get('/health', (req, res) => {
-  const rows = db.prepare('SELECT * FROM health WHERE user_id = ? ORDER BY date DESC LIMIT 90').all(req.userId);
+router.get('/health', async (req, res) => {
+  const rows = await db.prepare('SELECT * FROM health WHERE user_id = ? ORDER BY date DESC LIMIT 90').all(req.userId);
   res.json(rows);
 });
 
-router.post('/health', (req, res) => {
+router.post('/health', async (req, res) => {
   const { date, weight, sleep_hours, water_glasses, steps, mood, notes } = req.body || {};
   if (!date) return res.status(400).json({ error: 'date required' });
-  db.prepare(`INSERT INTO health (user_id, date, weight, sleep_hours, water_glasses, steps, mood, notes)
+  await db.prepare(`INSERT INTO health (user_id, date, weight, sleep_hours, water_glasses, steps, mood, notes)
     VALUES (?,?,?,?,?,?,?,?)
     ON CONFLICT(user_id, date) DO UPDATE SET
       weight=excluded.weight, sleep_hours=excluded.sleep_hours, water_glasses=excluded.water_glasses,
       steps=excluded.steps, mood=excluded.mood, notes=excluded.notes`)
     .run(req.userId, date, weight ?? null, sleep_hours ?? null, water_glasses ?? null, steps ?? null, mood ?? null, notes || '');
-  res.json(db.prepare('SELECT * FROM health WHERE user_id=? AND date=?').get(req.userId, date));
+  res.json(await db.prepare('SELECT * FROM health WHERE user_id=? AND date=?').get(req.userId, date));
 });
 
-router.delete('/health/:id', (req, res) => {
-  db.prepare('DELETE FROM health WHERE id=? AND user_id=?').run(req.params.id, req.userId);
+router.delete('/health/:id', async (req, res) => {
+  await db.prepare('DELETE FROM health WHERE id=? AND user_id=?').run(req.params.id, req.userId);
   res.json({ ok: true });
 });
 
 // ---- Dashboard summary ----
-router.get('/dashboard', (req, res) => {
+router.get('/dashboard', async (req, res) => {
   const uid = req.userId;
   // client sends its local date; fall back to server date
   const today = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : new Date().toISOString().slice(0, 10);
   const monthStart = today.slice(0, 8) + '01';
   res.json({
     today,
-    tasksToday: db.prepare('SELECT * FROM tasks WHERE user_id=? AND date=? ORDER BY status ASC, time ASC').all(uid, today),
-    overdueTasks: db.prepare("SELECT COUNT(*) c FROM tasks WHERE user_id=? AND date < ? AND status != 'done'").get(uid, today).c,
-    runningProjects: db.prepare("SELECT * FROM projects WHERE user_id=? AND status='running' ORDER BY end_date ASC LIMIT 6").all(uid),
-    upcomingProjects: db.prepare("SELECT * FROM projects WHERE user_id=? AND status='upcoming' ORDER BY start_date ASC LIMIT 4").all(uid),
-    plans: db.prepare('SELECT * FROM plans WHERE user_id=? ORDER BY estimate_date ASC LIMIT 4').all(uid),
-    monthExpenses: db.prepare("SELECT COALESCE(SUM(amount),0) total FROM expenses WHERE user_id=? AND date >= ? AND type='expense'").get(uid, monthStart).total,
-    monthIncome: db.prepare("SELECT COALESCE(SUM(amount),0) total FROM expenses WHERE user_id=? AND date >= ? AND type='income'").get(uid, monthStart).total,
-    habits: db.prepare('SELECT h.*, (SELECT COUNT(*) FROM habit_logs l WHERE l.habit_id=h.id AND l.date=?) AS done_today FROM habits h WHERE h.user_id=? AND h.archived=0').all(today, uid),
-    eventsToday: db.prepare('SELECT * FROM events WHERE user_id=? AND date=? ORDER BY start_time').all(uid, today),
-    upcomingEvents: db.prepare('SELECT * FROM events WHERE user_id=? AND date > ? ORDER BY date, start_time LIMIT 5').all(uid, today),
-    latestHealth: db.prepare('SELECT * FROM health WHERE user_id=? ORDER BY date DESC LIMIT 1').get(uid) || null,
-    activeTrip: db.prepare("SELECT * FROM trips WHERE user_id=? AND status != 'completed' ORDER BY start_date ASC LIMIT 1").get(uid) || null,
-    ideasCount: db.prepare('SELECT COUNT(*) c FROM ideas WHERE user_id=?').get(uid).c,
+    tasksToday: await db.prepare('SELECT * FROM tasks WHERE user_id=? AND date=? ORDER BY status ASC, time ASC').all(uid, today),
+    overdueTasks: (await db.prepare("SELECT COUNT(*) c FROM tasks WHERE user_id=? AND date < ? AND status != 'done'").get(uid, today)).c,
+    runningProjects: await db.prepare("SELECT * FROM projects WHERE user_id=? AND status='running' ORDER BY end_date ASC LIMIT 6").all(uid),
+    upcomingProjects: await db.prepare("SELECT * FROM projects WHERE user_id=? AND status='upcoming' ORDER BY start_date ASC LIMIT 4").all(uid),
+    plans: await db.prepare('SELECT * FROM plans WHERE user_id=? ORDER BY estimate_date ASC LIMIT 4').all(uid),
+    monthExpenses: (await db.prepare("SELECT COALESCE(SUM(amount),0) total FROM expenses WHERE user_id=? AND date >= ? AND type='expense'").get(uid, monthStart)).total,
+    monthIncome: (await db.prepare("SELECT COALESCE(SUM(amount),0) total FROM expenses WHERE user_id=? AND date >= ? AND type='income'").get(uid, monthStart)).total,
+    habits: await db.prepare('SELECT h.*, (SELECT COUNT(*) FROM habit_logs l WHERE l.habit_id=h.id AND l.date=?) AS done_today FROM habits h WHERE h.user_id=? AND h.archived=0').all(today, uid),
+    eventsToday: await db.prepare('SELECT * FROM events WHERE user_id=? AND date=? ORDER BY start_time').all(uid, today),
+    upcomingEvents: await db.prepare('SELECT * FROM events WHERE user_id=? AND date > ? ORDER BY date, start_time LIMIT 5').all(uid, today),
+    latestHealth: await db.prepare('SELECT * FROM health WHERE user_id=? ORDER BY date DESC LIMIT 1').get(uid) || null,
+    activeTrip: await db.prepare("SELECT * FROM trips WHERE user_id=? AND status != 'completed' ORDER BY start_date ASC LIMIT 1").get(uid) || null,
+    ideasCount: (await db.prepare('SELECT COUNT(*) c FROM ideas WHERE user_id=?').get(uid)).c,
   });
 });
 

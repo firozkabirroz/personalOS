@@ -59,4 +59,4 @@ Open **/admin** (owner or manager accounts).
 
 - Port: set `PORT` (default `4321`)
 - Secrets (platform AI keys, OAuth secrets) live in the DB and are only shown masked
-- Landing page: `/landing` — update `APP_URL` near the bottom of `public-landing/index.html`
+- Landing page: `/` — Login goes to `/app`, sign up to `/app?signup=1`

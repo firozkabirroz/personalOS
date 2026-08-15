@@ -3,12 +3,16 @@
   "version": "1.0.0",
   "description": "Personal OS - all-in-one life & project dashboard",
   "main": "server/index.js",
+  "engines": {
+    "node": "22.x || 24.x"
+  },
   "scripts": {
     "start": "node server/index.js",
     "start:demo": "node -e \"process.env.SEED_DEMO='1'; require('./server/index.js')\"",
     "reset": "node -e \"const fs=require('fs');fs.rmSync('./data',{recursive:true,force:true});console.log('Database reset — start the app and register a fresh account (first account = admin).')\""
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^12.11.1",
     "express": "^4.21.0",

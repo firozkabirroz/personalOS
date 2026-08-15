@@ -26,50 +26,50 @@ const chatUpload = multer({
 });
 
 // Build a compact snapshot of the user's data for the AI's system prompt
-function buildContext(uid) {
+async function buildContext(uid) {
   const today = new Date().toISOString().slice(0, 10);
   const monthStart = today.slice(0, 8) + '01';
   const lines = [];
 
-  const tasks = db.prepare("SELECT title, date, time, priority, status FROM tasks WHERE user_id=? AND (status != 'done' OR date >= ?) ORDER BY date LIMIT 40").all(uid, today);
+  const tasks = await db.prepare("SELECT title, date, time, priority, status FROM tasks WHERE user_id=? AND (status != 'done' OR date >= ?) ORDER BY date LIMIT 40").all(uid, today);
   if (tasks.length) {
     lines.push('## Tasks');
     for (const t of tasks) lines.push(`- [${t.status}] ${t.title} (date: ${t.date}${t.time ? ' ' + t.time : ''}, priority: ${t.priority})`);
   }
 
-  const projects = db.prepare('SELECT id, name, description, status, start_date, end_date, progress FROM projects WHERE user_id=? LIMIT 30').all(uid);
+  const projects = await db.prepare('SELECT id, name, description, status, start_date, end_date, progress FROM projects WHERE user_id=? LIMIT 30').all(uid);
   if (projects.length) {
     lines.push('## Projects');
     for (const p of projects) {
       lines.push(`- ${p.name} [${p.status}] ${p.start_date || '?'} → ${p.end_date || '?'} (${p.progress}% done)${p.description ? ': ' + p.description.slice(0, 150) : ''}`);
-      const items = db.prepare('SELECT content, done FROM project_items WHERE project_id=? ORDER BY done ASC, position ASC LIMIT 12').all(p.id);
+      const items = await db.prepare('SELECT content, done FROM project_items WHERE project_id=? ORDER BY done ASC, position ASC LIMIT 12').all(p.id);
       for (const it of items) lines.push(`    ${it.done ? '[x]' : '[ ]'} ${it.content}`);
     }
   }
 
-  const plans = db.prepare('SELECT title, details, estimate_date, status FROM plans WHERE user_id=? LIMIT 20').all(uid);
+  const plans = await db.prepare('SELECT title, details, estimate_date, status FROM plans WHERE user_id=? LIMIT 20').all(uid);
   if (plans.length) {
     lines.push('## Future plans');
     for (const p of plans) lines.push(`- ${p.title} [${p.status}] est. ${p.estimate_date || 'TBD'}${p.details ? ': ' + p.details.slice(0, 150) : ''}`);
   }
 
-  const ideas = db.prepare('SELECT title, content, tags FROM ideas WHERE user_id=? ORDER BY pinned DESC, updated_at DESC LIMIT 20').all(uid);
+  const ideas = await db.prepare('SELECT title, content, tags FROM ideas WHERE user_id=? ORDER BY pinned DESC, updated_at DESC LIMIT 20').all(uid);
   if (ideas.length) {
     lines.push('## Brainstorming notes');
     for (const i of ideas) lines.push(`- ${i.title}${i.tags ? ' [' + i.tags + ']' : ''}: ${(i.content || '').slice(0, 200)}`);
   }
 
-  const expTotal = db.prepare("SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE user_id=? AND date >= ? AND type='expense'").get(uid, monthStart).t;
-  const incTotal = db.prepare("SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE user_id=? AND date >= ? AND type='income'").get(uid, monthStart).t;
-  const expByCat = db.prepare("SELECT category, SUM(amount) t FROM expenses WHERE user_id=? AND date >= ? AND type='expense' GROUP BY category ORDER BY t DESC").all(uid, monthStart);
-  const recentExp = db.prepare('SELECT title, amount, category, date, type FROM expenses WHERE user_id=? ORDER BY date DESC LIMIT 25').all(uid);
+  const expTotal = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE user_id=? AND date >= ? AND type='expense'").get(uid, monthStart)).t;
+  const incTotal = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE user_id=? AND date >= ? AND type='income'").get(uid, monthStart)).t;
+  const expByCat = await db.prepare("SELECT category, SUM(amount) t FROM expenses WHERE user_id=? AND date >= ? AND type='expense' GROUP BY category ORDER BY t DESC").all(uid, monthStart);
+  const recentExp = await db.prepare('SELECT title, amount, category, date, type FROM expenses WHERE user_id=? ORDER BY date DESC LIMIT 25').all(uid);
   if (recentExp.length) {
-    lines.push(`## Money (this month: income ${incTotal.toFixed(2)}, expenses ${expTotal.toFixed(2)}, balance ${(incTotal - expTotal).toFixed(2)})`);
-    lines.push('Spending by category this month: ' + (expByCat.map(c => `${c.category}: ${c.t.toFixed(2)}`).join(', ') || 'none'));
+    lines.push(`## Money (this month: income ${Number(incTotal).toFixed(2)}, expenses ${Number(expTotal).toFixed(2)}, balance ${(Number(incTotal) - Number(expTotal)).toFixed(2)})`);
+    lines.push('Spending by category this month: ' + (expByCat.map(c => `${c.category}: ${Number(c.t).toFixed(2)}`).join(', ') || 'none'));
     for (const e of recentExp) lines.push(`- ${e.date} [${e.type}] ${e.title}: ${e.amount} (${e.category})`);
   }
 
-  const debts = db.prepare("SELECT person, type, amount, paid, due_date, status FROM debts WHERE user_id=? AND status='active' LIMIT 20").all(uid);
+  const debts = await db.prepare("SELECT person, type, amount, paid, due_date, status FROM debts WHERE user_id=? AND status='active' LIMIT 20").all(uid);
   if (debts.length) {
     lines.push('## Debts & loans (active)');
     for (const d of debts) {
@@ -77,17 +77,17 @@ function buildContext(uid) {
     }
   }
 
-  const invs = db.prepare('SELECT id, name, type, partner, amount, expected_return, status FROM investments WHERE user_id=? LIMIT 20').all(uid);
+  const invs = await db.prepare('SELECT id, name, type, partner, amount, expected_return, status FROM investments WHERE user_id=? LIMIT 20').all(uid);
   if (invs.length) {
     lines.push('## Investments ("made" = my investment, "received" = investor capital I must pay returns on)');
     for (const i of invs) {
-      const profit = db.prepare("SELECT COALESCE(SUM(amount),0) t FROM investment_txns WHERE investment_id=? AND type='profit'").get(i.id).t;
-      const payout = db.prepare("SELECT COALESCE(SUM(amount),0) t FROM investment_txns WHERE investment_id=? AND type='payout'").get(i.id).t;
-      lines.push(`- [${i.type}] ${i.name}${i.partner ? ' (with ' + i.partner + ')' : ''}: capital ${i.amount}, ${i.type === 'made' ? 'profit received ' + profit.toFixed(2) : 'returns paid ' + payout.toFixed(2)}${i.expected_return ? ', expected: ' + i.expected_return : ''} [${i.status}]`);
+      const profit = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM investment_txns WHERE investment_id=? AND type='profit'").get(i.id)).t;
+      const payout = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM investment_txns WHERE investment_id=? AND type='payout'").get(i.id)).t;
+      lines.push(`- [${i.type}] ${i.name}${i.partner ? ' (with ' + i.partner + ')' : ''}: capital ${i.amount}, ${i.type === 'made' ? 'profit received ' + Number(profit).toFixed(2) : 'returns paid ' + Number(payout).toFixed(2)}${i.expected_return ? ', expected: ' + i.expected_return : ''} [${i.status}]`);
     }
   }
 
-  const habits = db.prepare(`SELECT h.name, h.id,
+  const habits = await db.prepare(`SELECT h.name, h.id,
       (SELECT COUNT(*) FROM habit_logs l WHERE l.habit_id=h.id AND l.date >= date('now','-30 days')) AS last30
       FROM habits h WHERE h.user_id=? AND h.archived=0`).all(uid);
   if (habits.length) {
@@ -95,19 +95,19 @@ function buildContext(uid) {
     for (const h of habits) lines.push(`- ${h.name}: ${h.last30}/30 days`);
   }
 
-  const health = db.prepare('SELECT date, weight, sleep_hours, water_glasses, steps, mood FROM health WHERE user_id=? ORDER BY date DESC LIMIT 14').all(uid);
+  const health = await db.prepare('SELECT date, weight, sleep_hours, water_glasses, steps, mood FROM health WHERE user_id=? ORDER BY date DESC LIMIT 14').all(uid);
   if (health.length) {
     lines.push('## Health log (latest first; mood is 1-5)');
     for (const h of health) lines.push(`- ${h.date}: weight=${h.weight ?? '-'}, sleep=${h.sleep_hours ?? '-'}h, water=${h.water_glasses ?? '-'}, steps=${h.steps ?? '-'}, mood=${h.mood ?? '-'}`);
   }
 
-  const trips = db.prepare('SELECT destination, start_date, end_date, budget, status, notes FROM trips WHERE user_id=? LIMIT 10').all(uid);
+  const trips = await db.prepare('SELECT destination, start_date, end_date, budget, status, notes FROM trips WHERE user_id=? LIMIT 10').all(uid);
   if (trips.length) {
     lines.push('## Trips');
     for (const t of trips) lines.push(`- ${t.destination} [${t.status}] ${t.start_date || '?'} → ${t.end_date || '?'}, budget ${t.budget}`);
   }
 
-  const events = db.prepare('SELECT title, date, start_time FROM events WHERE user_id=? AND date >= ? ORDER BY date LIMIT 15').all(uid, today);
+  const events = await db.prepare('SELECT title, date, start_time FROM events WHERE user_id=? AND date >= ? ORDER BY date LIMIT 15').all(uid, today);
   if (events.length) {
     lines.push('## Upcoming calendar events');
     for (const e of events) lines.push(`- ${e.date}${e.start_time ? ' ' + e.start_time : ''}: ${e.title}`);
@@ -116,30 +116,30 @@ function buildContext(uid) {
   return lines.join('\n');
 }
 
-function ownerId() {
-  return db.prepare("SELECT id FROM users WHERE role='owner' LIMIT 1").get()?.id || null;
+async function ownerId() {
+  return (await db.prepare("SELECT id FROM users WHERE role='owner' LIMIT 1").get())?.id || null;
 }
 
-function listActiveModels() {
-  return db.prepare('SELECT id, name, provider, model_id, position FROM ai_models WHERE active=1 ORDER BY position ASC, id ASC').all();
+async function listActiveModels() {
+  return await db.prepare('SELECT id, name, provider, model_id, position FROM ai_models WHERE active=1 ORDER BY position ASC, id ASC').all();
 }
 
-function resolveModel(modelDbId) {
+async function resolveModel(modelDbId) {
   if (modelDbId) {
-    const m = db.prepare('SELECT * FROM ai_models WHERE id=? AND active=1').get(modelDbId);
+    const m = await db.prepare('SELECT * FROM ai_models WHERE id=? AND active=1').get(modelDbId);
     if (m) return m;
   }
-  return db.prepare('SELECT * FROM ai_models WHERE active=1 ORDER BY position ASC LIMIT 1').get();
+  return await db.prepare('SELECT * FROM ai_models WHERE active=1 ORDER BY position ASC LIMIT 1').get();
 }
 
 /** Resolve platform key + model for a chat — everything is free for everyone. */
-function resolveAIRoute(modelDbId) {
-  const oid = ownerId();
-  const model = resolveModel(modelDbId);
+async function resolveAIRoute(modelDbId) {
+  const oid = await ownerId();
+  const model = await resolveModel(modelDbId);
   if (!model) return { error: 'No AI model is available. Ask the admin to add one in Admin → AI Models.' };
 
-  const apiKey = oid ? getSetting(oid, `admin_${model.provider}_key`) : '';
-  const baseUrl = model.provider === 'custom' && oid ? getSetting(oid, 'admin_custom_base_url') : '';
+  const apiKey = oid ? await getSetting(oid, `admin_${model.provider}_key`) : '';
+  const baseUrl = model.provider === 'custom' && oid ? await getSetting(oid, 'admin_custom_base_url') : '';
 
   if (!apiKey) {
     return { error: `AI service সাময়িকভাবে বন্ধ আছে — admin কে "${model.provider}" key যোগ করতে বলুন।` };
@@ -237,21 +237,60 @@ async function callOpenAI({ apiKey, model, baseUrl, system, messages, userConten
   return data.choices?.[0]?.message?.content || '';
 }
 
-router.get('/ai/models', (req, res) => {
-  res.json({ models: listActiveModels() });
+router.get('/ai/models', async (req, res) => {
+  res.json({ models: await listActiveModels() });
 });
 
-router.get('/ai/history', (req, res) => {
-  res.json(db.prepare('SELECT id, role, content, created_at, model_id, attachments FROM chats WHERE user_id=? ORDER BY id ASC LIMIT 200').all(req.userId));
+// ============ Conversations (chat topics) ============
+router.get('/ai/conversations', async (req, res) => {
+  const rows = await db.prepare(`
+    SELECT c.id, c.title, c.created_at, c.updated_at,
+      (SELECT COUNT(*) FROM chats WHERE conversation_id = c.id) AS message_count,
+      (SELECT content FROM chats WHERE conversation_id = c.id ORDER BY id DESC LIMIT 1) AS last_message
+    FROM conversations c WHERE c.user_id = ? ORDER BY c.updated_at DESC`).all(req.userId);
+  res.json(rows);
 });
 
-router.delete('/ai/history', (req, res) => {
-  db.prepare('DELETE FROM chats WHERE user_id=?').run(req.userId);
+router.post('/ai/conversations', async (req, res) => {
+  const title = (req.body?.title || '').trim() || 'New chat';
+  const info = await db.prepare('INSERT INTO conversations (user_id, title) VALUES (?,?)').run(req.userId, title.slice(0, 80));
+  res.json(await db.prepare('SELECT * FROM conversations WHERE id=?').get(info.lastInsertRowid));
+});
+
+router.put('/ai/conversations/:id', async (req, res) => {
+  const title = (req.body?.title || '').trim();
+  if (!title) return res.status(400).json({ error: 'Title is required' });
+  const info = await db.prepare('UPDATE conversations SET title=? WHERE id=? AND user_id=?').run(title.slice(0, 80), req.params.id, req.userId);
+  if (!info.changes) return res.status(404).json({ error: 'Conversation not found' });
+  res.json(await db.prepare('SELECT * FROM conversations WHERE id=?').get(req.params.id));
+});
+
+router.delete('/ai/conversations/:id', async (req, res) => {
+  const conv = await db.prepare('SELECT id FROM conversations WHERE id=? AND user_id=?').get(req.params.id, req.userId);
+  if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+  await db.prepare('DELETE FROM chats WHERE conversation_id=? AND user_id=?').run(conv.id, req.userId);
+  await db.prepare('DELETE FROM conversations WHERE id=?').run(conv.id);
   res.json({ ok: true });
 });
 
-router.get('/ai/usage', (req, res) => {
-  res.json({ unlimited: true, models: listActiveModels() });
+router.get('/ai/history', async (req, res) => {
+  const convId = Number(req.query.conversation_id) || 0;
+  if (convId) {
+    const conv = await db.prepare('SELECT id FROM conversations WHERE id=? AND user_id=?').get(convId, req.userId);
+    if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+    return res.json(await db.prepare('SELECT id, role, content, created_at, model_id, attachments, conversation_id FROM chats WHERE user_id=? AND conversation_id=? ORDER BY id ASC LIMIT 200').all(req.userId, convId));
+  }
+  res.json(await db.prepare('SELECT id, role, content, created_at, model_id, attachments, conversation_id FROM chats WHERE user_id=? ORDER BY id ASC LIMIT 200').all(req.userId));
+});
+
+router.delete('/ai/history', async (req, res) => {
+  await db.prepare('DELETE FROM chats WHERE user_id=?').run(req.userId);
+  await db.prepare('DELETE FROM conversations WHERE user_id=?').run(req.userId);
+  res.json({ ok: true });
+});
+
+router.get('/ai/usage', async (req, res) => {
+  res.json({ unlimited: true, models: await listActiveModels() });
 });
 
 router.post('/ai/chat', (req, res, next) => {
@@ -265,9 +304,22 @@ router.post('/ai/chat', (req, res, next) => {
   const modelDbId = req.body?.model_id ? Number(req.body.model_id) : null;
   if (!message && !(req.files || []).length) return res.status(400).json({ error: 'Message is empty' });
 
-  const user = db.prepare('SELECT id, name, username, role FROM users WHERE id=?').get(uid);
-  const route = resolveAIRoute(modelDbId);
+  const user = await db.prepare('SELECT id, name, username, role FROM users WHERE id=?').get(uid);
+  const route = await resolveAIRoute(modelDbId);
   if (route.error) return res.status(400).json({ error: route.error });
+
+  // Resolve the conversation this message belongs to — create one if needed
+  let conv = null;
+  const reqConvId = Number(req.body?.conversation_id) || 0;
+  if (reqConvId) conv = await db.prepare('SELECT * FROM conversations WHERE id=? AND user_id=?').get(reqConvId, uid);
+  if (!conv) {
+    const autoTitle = (message || 'New chat').slice(0, 60);
+    const info = await db.prepare('INSERT INTO conversations (user_id, title) VALUES (?,?)').run(uid, autoTitle);
+    conv = await db.prepare('SELECT * FROM conversations WHERE id=?').get(info.lastInsertRowid);
+  } else if (conv.title === 'New chat' && message) {
+    await db.prepare('UPDATE conversations SET title=? WHERE id=?').run(message.slice(0, 60), conv.id);
+    conv.title = message.slice(0, 60);
+  }
 
   const { provider, apiKey, model, baseUrl, modelRow } = route;
   const files = req.files || [];
@@ -275,7 +327,7 @@ router.post('/ai/chat', (req, res, next) => {
   const userContent = buildUserContent(message || '(see attached files)', parts);
   const attachmentMeta = JSON.stringify(files.map(f => ({ name: f.originalname, mime: f.mimetype, size: f.size, stored: f.filename })));
 
-  const context = buildContext(uid);
+  const context = await buildContext(uid);
   const system = `You are the personal AI assistant inside "${user?.name || user?.username}"'s Personal OS dashboard.
 Today's date is ${new Date().toISOString().slice(0, 10)}.
 You have read access to their live data below. Use it to give specific, practical, personalised answers — reference their actual tasks, projects, expenses, habits, health and trips by name when relevant. Be concise and actionable. If data is missing for a question, say so and suggest what to track.
@@ -284,7 +336,7 @@ You have read access to their live data below. Use it to give specific, practica
 ${context || '(No data yet — the user has not added anything.)'}
 === END DATA ===`;
 
-  const history = db.prepare('SELECT role, content FROM chats WHERE user_id=? ORDER BY id DESC LIMIT 20').all(uid).reverse();
+  const history = (await db.prepare('SELECT role, content FROM chats WHERE user_id=? AND conversation_id=? ORDER BY id DESC LIMIT 20').all(uid, conv.id)).reverse();
   const messages = [
     ...history.map(h => ({ role: h.role, content: h.content })),
     { role: 'user', content: typeof userContent === 'string' ? userContent : userContent.text },
@@ -297,18 +349,19 @@ ${context || '(No data yet — the user has not added anything.)'}
     else reply = await callOpenAI({ apiKey, model, baseUrl: provider === 'custom' ? baseUrl : '', system, messages, userContent: contentArg });
 
     const displayMsg = message || '(attachment)';
-    db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments) VALUES (?,?,?,?,?)')
-      .run(uid, 'user', displayMsg, modelRow.id, attachmentMeta);
-    db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments) VALUES (?,?,?,?,?)')
-      .run(uid, 'assistant', reply, modelRow.id, '');
+    await db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments, conversation_id) VALUES (?,?,?,?,?,?)')
+      .run(uid, 'user', displayMsg, modelRow.id, attachmentMeta, conv.id);
+    await db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments, conversation_id) VALUES (?,?,?,?,?,?)')
+      .run(uid, 'assistant', reply, modelRow.id, '', conv.id);
+    await db.prepare("UPDATE conversations SET updated_at = datetime('now') WHERE id=?").run(conv.id);
 
-    if (getSetting(uid, 'telegram_ai_reports') === 'on') {
+    if (await getSetting(uid, 'telegram_ai_reports') === 'on') {
       const { send, escapeHtml } = require('./telegram');
       send(uid, `🤖 <b>AI Task Report</b>\n\n📝 <i>${escapeHtml(displayMsg.slice(0, 300))}</i>\n\n${escapeHtml(reply)}`)
         .catch(e => console.error('Telegram AI forward:', e.message));
     }
 
-    res.json({ reply, model: { id: modelRow.id, name: modelRow.name } });
+    res.json({ reply, model: { id: modelRow.id, name: modelRow.name }, conversation: { id: conv.id, title: conv.title } });
   } catch (e) {
     // clean up uploaded files on failure
     for (const f of files) {

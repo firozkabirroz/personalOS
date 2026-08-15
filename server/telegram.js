@@ -4,8 +4,8 @@ const { logActivity } = require('./platform');
 
 // ============ Sending ============
 async function send(uid, text) {
-  const token = getSetting(uid, 'telegram_bot_token');
-  const chat = getSetting(uid, 'telegram_chat_id');
+  const token = await getSetting(uid, 'telegram_bot_token');
+  const chat = await getSetting(uid, 'telegram_chat_id');
   if (!token) throw new Error('Telegram is not configured. Add your bot token in Settings.');
   if (!chat) throw new Error('Telegram is not connected yet. Go to Settings and tap Connect.');
   const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -39,7 +39,7 @@ async function sendRaw(token, chatId, text) {
 const activePolls = new Map(); // userId -> { token, offset, until }
 
 async function linkStart(uid) {
-  const token = getSetting(uid, 'telegram_bot_token');
+  const token = await getSetting(uid, 'telegram_bot_token');
   if (!token) throw new Error('Save your bot token first, then tap Connect.');
   await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`).catch(() => {});
   const meResp = await fetch(`https://api.telegram.org/bot${token}/getMe`);
@@ -62,8 +62,8 @@ async function pollUserBot(uid) {
       for (const upd of data.result || []) {
         state.offset = upd.update_id + 1;
         if (upd.message?.chat?.id) {
-          setSetting(uid, 'telegram_chat_id', String(upd.message.chat.id));
-          logActivity({ userId: uid, type: 'telegram_connected', message: 'Connected Telegram notifications' });
+          await setSetting(uid, 'telegram_chat_id', String(upd.message.chat.id));
+          await logActivity({ userId: uid, type: 'telegram_connected', message: 'Connected Telegram notifications' });
           await sendRaw(state.token, upd.message.chat.id, '✅ Telegram connected! You will now receive your Personal OS notifications here.');
           activePolls.delete(uid);
           return;
@@ -83,13 +83,14 @@ function escapeHtml(s) {
 const money = (n) => Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // ============ Report builders ============
-function userToday(uid) {
-  return localNow(getSetting(uid, 'timezone') || 'Asia/Dhaka').date;
+async function userToday(uid) {
+  return localNow((await getSetting(uid, 'timezone')) || 'Asia/Dhaka').date;
 }
 
-function morningReport(uid, today = userToday(uid)) {
-  const projects = db.prepare("SELECT name, end_date, progress FROM projects WHERE user_id=? AND status='running' ORDER BY end_date ASC").all(uid);
-  const tasks = db.prepare("SELECT title, time, priority FROM tasks WHERE user_id=? AND date=? AND status!='done' ORDER BY time").all(uid, today);
+async function morningReport(uid, today) {
+  if (today === undefined) today = await userToday(uid);
+  const projects = await db.prepare("SELECT name, end_date, progress FROM projects WHERE user_id=? AND status='running' ORDER BY end_date ASC").all(uid);
+  const tasks = await db.prepare("SELECT title, time, priority FROM tasks WHERE user_id=? AND date=? AND status!='done' ORDER BY time").all(uid, today);
   const lines = ['☀️ <b>Good morning! Your running projects</b>', ''];
   if (projects.length) {
     for (const p of projects) {
@@ -103,11 +104,12 @@ function morningReport(uid, today = userToday(uid)) {
   return lines.join('\n');
 }
 
-function nightReport(uid, today = userToday(uid)) {
-  const doneToday = db.prepare("SELECT COUNT(*) c FROM tasks WHERE user_id=? AND date=? AND status='done'").get(uid, today).c;
-  const totalToday = db.prepare('SELECT COUNT(*) c FROM tasks WHERE user_id=? AND date=?').get(uid, today).c;
-  const projects = db.prepare("SELECT name, progress, end_date FROM projects WHERE user_id=? AND status='running'").all(uid);
-  const spentToday = db.prepare("SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE user_id=? AND date=? AND type='expense'").get(uid, today).t;
+async function nightReport(uid, today) {
+  if (today === undefined) today = await userToday(uid);
+  const doneToday = (await db.prepare("SELECT COUNT(*) c FROM tasks WHERE user_id=? AND date=? AND status='done'").get(uid, today)).c;
+  const totalToday = (await db.prepare('SELECT COUNT(*) c FROM tasks WHERE user_id=? AND date=?').get(uid, today)).c;
+  const projects = await db.prepare("SELECT name, progress, end_date FROM projects WHERE user_id=? AND status='running'").all(uid);
+  const spentToday = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE user_id=? AND date=? AND type='expense'").get(uid, today)).t;
   const lines = ['🌙 <b>End-of-day report</b>', ''];
   lines.push(`✅ Tasks: <b>${doneToday}/${totalToday}</b> completed today`);
   lines.push('');
@@ -124,21 +126,21 @@ function nightReport(uid, today = userToday(uid)) {
   return lines.join('\n');
 }
 
-function financeReport(uid, monthKey) {
+async function financeReport(uid, monthKey) {
   // monthKey: 'YYYY-MM'
   const label = new Date(monthKey + '-01T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
   const like = monthKey + '%';
-  const income = db.prepare("SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE user_id=? AND date LIKE ? AND type='income'").get(uid, like).t;
-  const expense = db.prepare("SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE user_id=? AND date LIKE ? AND type='expense'").get(uid, like).t;
-  const byCat = db.prepare("SELECT category, SUM(amount) t FROM expenses WHERE user_id=? AND date LIKE ? AND type='expense' GROUP BY category ORDER BY t DESC LIMIT 5").all(uid, like);
-  const profit = db.prepare(`SELECT COALESCE(SUM(x.amount),0) t FROM investment_txns x JOIN investments i ON i.id=x.investment_id
-    WHERE x.user_id=? AND x.date LIKE ? AND x.type='profit' AND i.type='made'`).get(uid, like).t;
-  const payout = db.prepare(`SELECT COALESCE(SUM(x.amount),0) t FROM investment_txns x JOIN investments i ON i.id=x.investment_id
-    WHERE x.user_id=? AND x.date LIKE ? AND x.type='payout' AND i.type='received'`).get(uid, like).t;
-  const receivable = db.prepare("SELECT COALESCE(SUM(amount-paid),0) t FROM debts WHERE user_id=? AND type='lent' AND status='active'").get(uid).t;
-  const payable = db.prepare("SELECT COALESCE(SUM(amount-paid),0) t FROM debts WHERE user_id=? AND type='borrowed' AND status='active'").get(uid).t;
-  const investActive = db.prepare("SELECT COALESCE(SUM(amount),0) t FROM investments WHERE user_id=? AND type='made' AND status='active'").get(uid).t;
-  const capitalTaken = db.prepare("SELECT COALESCE(SUM(amount),0) t FROM investments WHERE user_id=? AND type='received' AND status='active'").get(uid).t;
+  const income = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE user_id=? AND date LIKE ? AND type='income'").get(uid, like)).t;
+  const expense = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE user_id=? AND date LIKE ? AND type='expense'").get(uid, like)).t;
+  const byCat = await db.prepare("SELECT category, SUM(amount) t FROM expenses WHERE user_id=? AND date LIKE ? AND type='expense' GROUP BY category ORDER BY t DESC LIMIT 5").all(uid, like);
+  const profit = (await db.prepare(`SELECT COALESCE(SUM(x.amount),0) t FROM investment_txns x JOIN investments i ON i.id=x.investment_id
+    WHERE x.user_id=? AND x.date LIKE ? AND x.type='profit' AND i.type='made'`).get(uid, like)).t;
+  const payout = (await db.prepare(`SELECT COALESCE(SUM(x.amount),0) t FROM investment_txns x JOIN investments i ON i.id=x.investment_id
+    WHERE x.user_id=? AND x.date LIKE ? AND x.type='payout' AND i.type='received'`).get(uid, like)).t;
+  const receivable = (await db.prepare("SELECT COALESCE(SUM(amount-paid),0) t FROM debts WHERE user_id=? AND type='lent' AND status='active'").get(uid)).t;
+  const payable = (await db.prepare("SELECT COALESCE(SUM(amount-paid),0) t FROM debts WHERE user_id=? AND type='borrowed' AND status='active'").get(uid)).t;
+  const investActive = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM investments WHERE user_id=? AND type='made' AND status='active'").get(uid)).t;
+  const capitalTaken = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM investments WHERE user_id=? AND type='received' AND status='active'").get(uid)).t;
   const balance = income - expense;
   const net = balance + profit - payout;
 
@@ -179,31 +181,31 @@ function localNow(tz) {
   }
 }
 
-function prefOn(uid, key) {
-  return (getSetting(uid, key) || 'on') === 'on';
+async function prefOn(uid, key) {
+  return ((await getSetting(uid, key)) || 'on') === 'on';
 }
 
 async function tick() {
-  const users = db.prepare(`SELECT DISTINCT user_id FROM settings WHERE key='telegram_bot_token' AND value != ''`).all();
+  const users = await db.prepare(`SELECT DISTINCT user_id FROM settings WHERE key='telegram_bot_token' AND value != ''`).all();
   for (const { user_id: uid } of users) {
-    if (!getSetting(uid, 'telegram_chat_id')) continue;
-    const now = localNow(getSetting(uid, 'timezone') || 'Asia/Dhaka');
+    if (!(await getSetting(uid, 'telegram_chat_id'))) continue;
+    const now = localNow((await getSetting(uid, 'timezone')) || 'Asia/Dhaka');
     try {
-      if (now.hour >= 10 && prefOn(uid, 'notif_morning') && getSetting(uid, 'tg_last_morning') !== now.date) {
-        setSetting(uid, 'tg_last_morning', now.date);
-        await send(uid, morningReport(uid, now.date));
+      if (now.hour >= 10 && await prefOn(uid, 'notif_morning') && (await getSetting(uid, 'tg_last_morning')) !== now.date) {
+        await setSetting(uid, 'tg_last_morning', now.date);
+        await send(uid, await morningReport(uid, now.date));
       }
-      if (now.hour >= 22 && prefOn(uid, 'notif_night') && getSetting(uid, 'tg_last_night') !== now.date) {
-        setSetting(uid, 'tg_last_night', now.date);
-        await send(uid, nightReport(uid, now.date));
+      if (now.hour >= 22 && await prefOn(uid, 'notif_night') && (await getSetting(uid, 'tg_last_night')) !== now.date) {
+        await setSetting(uid, 'tg_last_night', now.date);
+        await send(uid, await nightReport(uid, now.date));
       }
       // Monthly finance report: 1st day of month at/after 10:00, covering previous month
       const thisMonth = now.date.slice(0, 7);
-      if (now.day === '01' && now.hour >= 10 && prefOn(uid, 'notif_finance') && getSetting(uid, 'tg_last_finance') !== thisMonth) {
-        setSetting(uid, 'tg_last_finance', thisMonth);
+      if (now.day === '01' && now.hour >= 10 && await prefOn(uid, 'notif_finance') && (await getSetting(uid, 'tg_last_finance')) !== thisMonth) {
+        await setSetting(uid, 'tg_last_finance', thisMonth);
         const prev = new Date(thisMonth + '-01T00:00:00');
         prev.setMonth(prev.getMonth() - 1);
-        await send(uid, financeReport(uid, prev.toISOString().slice(0, 7)));
+        await send(uid, await financeReport(uid, prev.toISOString().slice(0, 7)));
       }
     } catch (e) {
       console.error(`Telegram scheduler (user ${uid}):`, e.message);
@@ -236,9 +238,9 @@ router.post('/telegram/report/:type', async (req, res) => {
   try {
     const uid = req.userId;
     let text;
-    if (req.params.type === 'morning') text = morningReport(uid);
-    else if (req.params.type === 'night') text = nightReport(uid);
-    else if (req.params.type === 'finance') text = financeReport(uid, (req.body?.month || userToday(uid).slice(0, 7)));
+    if (req.params.type === 'morning') text = await morningReport(uid);
+    else if (req.params.type === 'night') text = await nightReport(uid);
+    else if (req.params.type === 'finance') text = await financeReport(uid, (req.body?.month || (await userToday(uid)).slice(0, 7)));
     else return res.status(400).json({ error: 'Unknown report type' });
     await send(uid, text);
     res.json({ ok: true });

@@ -398,7 +398,29 @@ table.data tr:hover td { background: rgba(255,255,255,.018); }
 .habit-dot.future { opacity: .25; pointer-events: none; }
 
 /* ============ AI Chat ============ */
-.chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 170px); min-height: 420px; }
+.conv-strip {
+  display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 10px;
+  scrollbar-width: thin;
+}
+.conv-chip {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  background: var(--bg-soft); color: var(--text-dim);
+  border: 1px solid var(--border); border-radius: 99px;
+  padding: 6px 14px; font-size: 12.5px; font-weight: 600; font-family: inherit;
+  cursor: pointer; transition: border-color .13s, color .13s;
+  max-width: 240px; white-space: nowrap;
+}
+.conv-chip:hover { border-color: var(--accent); color: var(--text); }
+.conv-chip.active { background: var(--accent-soft); border-color: rgba(99,102,241,.55); color: var(--text); }
+.conv-chip.new { border-style: dashed; }
+.conv-del {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: rgba(239,68,68,.18); color: #fca5a5; font-size: 13px; line-height: 1;
+}
+.conv-del:hover { background: rgba(239,68,68,.4); color: #fff; }
+
+.chat-wrap { display: flex; flex-direction: column; height: calc(100vh - 214px); min-height: 420px; }
 .chat-scroll { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding: 8px 4px 18px; }
 .msg { display: flex; gap: 12px; max-width: 85%; animation: msgIn .25s cubic-bezier(.2,.7,.3,1) both; }
 @keyframes msgIn { from { opacity: 0; transform: translateY(8px); } }
