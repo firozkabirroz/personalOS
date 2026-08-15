@@ -20,12 +20,10 @@ const app = express();
 app.set('trust proxy', 1);
 
 app.use(express.json({ limit: '5mb' }));
-// Standalone admin panel — mounted before the root static so it can never be
-// shadowed by a future public/admin/* file
-app.use('/admin', express.static(path.join(__dirname, '..', 'public-admin')));
 // Landing is public/index.html (Vercel also serves public/ at /).
-// The app SPA lives at public/app/index.html so it cannot steal the root URL.
+// App SPA is public/app/, admin SPA is public/admin/.
 const publicDir = path.join(__dirname, '..', 'public');
+app.get(['/admin', '/admin/'], (req, res) => res.sendFile(path.join(publicDir, 'admin', 'index.html')));
 app.get(['/app', '/app/'], (req, res) => res.sendFile(path.join(publicDir, 'app', 'index.html')));
 app.get('/landing', (req, res) => res.redirect('/'));
 app.use(express.static(publicDir));
