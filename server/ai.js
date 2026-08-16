@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { db, getSetting, DATA_DIR } = require('./db');
+const { ownerId } = require('./platform');
 
 const router = express.Router();
 
@@ -116,40 +117,95 @@ async function buildContext(uid) {
   return lines.join('\n');
 }
 
-async function ownerId() {
-  return (await db.prepare("SELECT id FROM users WHERE role='owner' LIMIT 1").get())?.id || null;
+function normalizeKey(k) {
+  return String(k || '')
+    .replace(/^\uFEFF/, '')
+    .trim()
+    .replace(/^Bearer\s+/i, '')
+    .replace(/^["']|["']$/g, '')
+    .replace(/[\r\n\t]/g, '')
+    .trim();
+}
+
+function isLocalAiUrl(url) {
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(String(url || ''));
+}
+
+async function loadPlatformAI(oid) {
+  if (!oid) return { openai: '', anthropic: '', custom: '', customUrl: '' };
+  const [openai, anthropic, custom, customUrl] = await Promise.all([
+    getSetting(oid, 'admin_openai_key'),
+    getSetting(oid, 'admin_anthropic_key'),
+    getSetting(oid, 'admin_custom_key'),
+    getSetting(oid, 'admin_custom_base_url'),
+  ]);
+  return {
+    openai: normalizeKey(openai),
+    anthropic: normalizeKey(anthropic),
+    custom: normalizeKey(custom),
+    customUrl: String(customUrl || '').trim(),
+  };
+}
+
+function credsFor(model, keys) {
+  if (!model) return { apiKey: '', baseUrl: '' };
+  if (model.provider === 'custom') return { apiKey: keys.custom, baseUrl: keys.customUrl };
+  if (model.provider === 'openai') return { apiKey: keys.openai, baseUrl: '' };
+  if (model.provider === 'anthropic') return { apiKey: keys.anthropic, baseUrl: '' };
+  return { apiKey: '', baseUrl: '' };
+}
+
+function modelReady(model, keys) {
+  const { apiKey, baseUrl } = credsFor(model, keys);
+  if (model.provider === 'custom') return !!(baseUrl && (apiKey || isLocalAiUrl(baseUrl)));
+  return !!apiKey;
 }
 
 async function listActiveModels() {
-  return await db.prepare('SELECT id, name, provider, model_id, position FROM ai_models WHERE active=1 ORDER BY position ASC, id ASC').all();
+  const rows = await db.prepare(`SELECT id, name, provider, model_id, position FROM ai_models
+    WHERE active=1 ORDER BY CASE provider WHEN 'custom' THEN 0 ELSE 1 END, position ASC, id ASC`).all();
+  const keys = await loadPlatformAI(await ownerId());
+  const ready = rows.filter((m) => modelReady(m, keys));
+  return ready.length ? ready : rows.filter((m) => m.provider === 'custom');
 }
 
-async function resolveModel(modelDbId) {
+async function resolveModel(modelDbId, keys) {
   if (modelDbId) {
     const m = await db.prepare('SELECT * FROM ai_models WHERE id=? AND active=1').get(modelDbId);
-    if (m) return m;
+    if (m && modelReady(m, keys)) return m;
   }
-  return await db.prepare('SELECT * FROM ai_models WHERE active=1 ORDER BY position ASC LIMIT 1').get();
+  const rows = await db.prepare(`SELECT * FROM ai_models WHERE active=1
+    ORDER BY CASE provider WHEN 'custom' THEN 0 ELSE 1 END, position ASC, id ASC`).all();
+  return rows.find((m) => modelReady(m, keys)) || rows.find((m) => m.provider === 'custom') || rows[0] || null;
 }
 
 /** Resolve platform key + model for a chat — everything is free for everyone. */
 async function resolveAIRoute(modelDbId) {
   const oid = await ownerId();
-  const model = await resolveModel(modelDbId);
+  const keys = await loadPlatformAI(oid);
+  const model = await resolveModel(modelDbId, keys);
   if (!model) return { error: 'No AI model is available. Ask the admin to add one in Admin → AI Models.' };
 
-  const apiKey = oid ? await getSetting(oid, `admin_${model.provider}_key`) : '';
-  const baseUrl = model.provider === 'custom' && oid ? await getSetting(oid, 'admin_custom_base_url') : '';
+  const { apiKey, baseUrl } = credsFor(model, keys);
 
-  if (model.provider === 'custom' && !baseUrl) {
-    return { error: 'Custom API base URL set নেই — Admin → AI Models-এ Groq / Gemini / OpenRouter URL দিন।' };
-  }
-  // Custom/free OpenAI-compatible endpoints (Ollama, some gateways) work without a key.
-  if (!apiKey && model.provider !== 'custom') {
-    return { error: `AI service সাময়িকভাবে বন্ধ আছে — admin কে "${model.provider}" key যোগ করতে বলুন।` };
+  if (!modelReady(model, keys)) {
+    if (keys.customUrl && keys.custom) {
+      const fallback = await db.prepare(`SELECT * FROM ai_models WHERE active=1 AND provider='custom'
+        ORDER BY position ASC, id ASC LIMIT 1`).get();
+      if (fallback) {
+        return { provider: 'custom', apiKey: keys.custom, model: fallback.model_id, baseUrl: keys.customUrl, modelRow: fallback };
+      }
+    }
+    return { error: 'এই মডেলের API key সেট নেই। Admin → AI Models-এ Groq/Gemini key সেভ করুন, অথবা একটি Custom মডেল সিলেক্ট করুন।' };
   }
 
-  return { provider: model.provider, apiKey: apiKey || 'not-needed', model: model.model_id, baseUrl, modelRow: model };
+  return {
+    provider: model.provider,
+    apiKey: apiKey || (isLocalAiUrl(baseUrl) ? 'not-needed' : ''),
+    model: model.model_id,
+    baseUrl,
+    modelRow: model,
+  };
 }
 
 function fileToContentPart(file) {
@@ -243,8 +299,16 @@ async function callOpenAI({ apiKey, model, baseUrl, system, messages, userConten
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ model: model || 'gpt-4o-mini', messages: [{ role: 'system', content: system }, ...formatted] }),
   });
-  const data = await resp.json();
-  if (!resp.ok) throw new Error(data?.error?.message || `API error (${resp.status})`);
+  let data = {};
+  try { data = await resp.json(); } catch {}
+  if (!resp.ok) {
+    const raw = data?.error?.message || data?.error || `API error (${resp.status})`;
+    const msg = String(raw);
+    if (resp.status === 401 || /invalid api key|incorrect api key|unauthorized/i.test(msg)) {
+      throw new Error('Invalid API Key — Admin → AI Models-এ যে প্রোভাইডার ব্যবহার করছেন (Groq/Gemini/OpenRouter) সেই key সেভ করুন। OpenAI/Claude মডেল সিলেক্ট করলে এই এরর আসে যদি সেই paid key না থাকে।');
+    }
+    throw new Error(msg);
+  }
   return data.choices?.[0]?.message?.content || '';
 }
 

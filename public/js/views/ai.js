@@ -19,6 +19,13 @@ export default async function aiView() {
   let selectedModelId = models[0]?.id || null;
   let pendingFiles = [];
 
+  if (!models.length) {
+    return el('div', { class: 'empty' },
+      el('div', { class: 'big' }, '🔑'),
+      el('h3', {}, 'No AI model is connected yet'),
+      el('p', { class: 'muted' }, 'Admin → AI Models-এ Groq/Gemini key সেভ করুন এবং একটি Custom মডেল অ্যাড করুন। OpenAI/Claude মডেল চালাতে সেই paid key লাগে।'));
+  }
+
   const scroll = el('div', { class: 'chat-scroll' });
   const convStrip = el('div', { class: 'conv-strip' });
 
