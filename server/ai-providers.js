@@ -53,6 +53,14 @@ const KEY_FIELDS = [
 
 const PROVIDER_IDS = Object.keys(PROVIDERS);
 
+// Groq shut down these free/developer models on 16 Aug 2026.
+const GROQ_MODEL_MIGRATIONS = {
+  'llama-3.3-70b-versatile': { model_id: 'openai/gpt-oss-120b', name: 'GPT-OSS 120B (Groq)' },
+  'llama-3.1-8b-instant': { model_id: 'openai/gpt-oss-20b', name: 'GPT-OSS 20B Instant (Groq)' },
+};
+
+const GROQ_DEFAULT_MODEL = 'openai/gpt-oss-20b';
+
 function inferProvider(modelId, storedProvider) {
   const id = String(modelId || '').toLowerCase();
   if (id.includes(':free') || id.startsWith('meta-llama/') || id.startsWith('google/gemma') || id.startsWith('mistralai/')) {
@@ -65,7 +73,9 @@ function inferProvider(modelId, storedProvider) {
     id === 'llama-3.1-8b-instant' ||
     id.includes('gpt-oss') ||
     id.startsWith('llama-3.2') ||
-    id.startsWith('llama-3.3')
+    id.startsWith('llama-3.3') ||
+    id.startsWith('qwen/qwen3.6') ||
+    id.startsWith('groq/')
   ) return 'groq';
   if (id === 'llama3.1-8b' || id === 'llama3.3-70b') return 'cerebras';
   if (storedProvider && PROVIDERS[storedProvider]) return storedProvider;
@@ -79,8 +89,13 @@ function chatCompletionsUrl(baseUrl) {
   return raw + '/v1/chat/completions';
 }
 
+function looksLikeUrl(key) {
+  return /^https?:\/\//i.test(String(key || '').trim());
+}
+
 function guessKeyProvider(key) {
-  const k = String(key || '');
+  const k = String(key || '').trim();
+  if (looksLikeUrl(k)) return '';
   if (k.startsWith('gsk_')) return 'groq';
   if (k.startsWith('AIza') || k.startsWith('AQ.')) return 'gemini';
   if (k.startsWith('sk-or-')) return 'openrouter';
@@ -90,10 +105,38 @@ function guessKeyProvider(key) {
   return '';
 }
 
+function describeKey(key) {
+  const s = String(key || '').trim();
+  if (!s) return 'no key';
+  if (looksLikeUrl(s)) return 'a URL (base URL is not an API key)';
+  const p = guessKeyProvider(s);
+  if (p === 'groq') return 'a Groq gsk_ key that Groq rejected (revoked or typed wrong)';
+  if (p) return `a ${PROVIDERS[p]?.label || p} key, not Groq`;
+  return `key starting with "${s.slice(0, 6)}…"`;
+}
+
+function formatProviderError(status, raw, { host, model, apiKey } = {}) {
+  const msg = String(raw || '');
+  const replacement = GROQ_MODEL_MIGRATIONS[model];
+  if (replacement || /decommissioned|model_not_found|does not exist|no longer (available|supported)/i.test(msg)) {
+    if (replacement) {
+      return `Groq shut down ${model} on 16 Aug 2026. Use ${replacement.model_id} instead.`;
+    }
+    return msg;
+  }
+  if (status === 401 || /invalid api key|incorrect api key|unauthorized/i.test(msg)) {
+    const groqHint = /groq/i.test(String(host || ''))
+      ? ' Groq needs a gsk_ key from https://console.groq.com/keys — saving the base URL is not enough.'
+      : '';
+    return `Invalid API Key (${host || '?'} / ${model || '?'}). Sent ${describeKey(apiKey)}.${groqHint}`;
+  }
+  return msg || `API error (${status})`;
+}
+
 function keySlots(keys) {
   return [keys.groq, keys.custom, keys.openai, keys.gemini, keys.openrouter, keys.cerebras, keys.anthropic]
     .map((k) => String(k || '').trim())
-    .filter(Boolean);
+    .filter((k) => k && !looksLikeUrl(k));
 }
 
 /** Pick a key that actually belongs to this provider (prefix), never a mismatched one. */
@@ -101,7 +144,7 @@ function keyForProvider(provider, keys) {
   const prefixed = keySlots(keys).find((k) => guessKeyProvider(k) === provider);
   if (prefixed) return prefixed;
   const slot = String(keys[provider] || '').trim();
-  if (!slot) return '';
+  if (!slot || looksLikeUrl(slot)) return '';
   const guessed = guessKeyProvider(slot);
   if (!guessed || guessed === provider) return slot;
   return '';
@@ -109,5 +152,7 @@ function keyForProvider(provider, keys) {
 
 module.exports = {
   PROVIDERS, KEY_FIELDS, PROVIDER_IDS,
+  GROQ_MODEL_MIGRATIONS, GROQ_DEFAULT_MODEL,
   inferProvider, chatCompletionsUrl, guessKeyProvider, keyForProvider,
+  looksLikeUrl, describeKey, formatProviderError,
 };

@@ -664,9 +664,21 @@ async function seedAndCleanup() {
     }
   }
 
-  const { inferProvider, guessKeyProvider } = require('./ai-providers');
-  const catalog = await db.prepare('SELECT id, provider, model_id FROM ai_models').all();
+  const { inferProvider, guessKeyProvider, looksLikeUrl, GROQ_MODEL_MIGRATIONS } = require('./ai-providers');
+  const catalog = await db.prepare('SELECT id, name, provider, model_id, active FROM ai_models').all();
   for (const row of catalog) {
+    const next = GROQ_MODEL_MIGRATIONS[row.model_id];
+    if (next) {
+      const exists = catalog.some((r) => r.model_id === next.model_id && r.id !== row.id);
+      if (exists) {
+        await db.prepare('UPDATE ai_models SET active=0 WHERE id=?').run(row.id);
+      } else {
+        await db.prepare('UPDATE ai_models SET model_id=?, name=?, provider=? WHERE id=?')
+          .run(next.model_id, next.name, 'groq', row.id);
+        row.model_id = next.model_id;
+      }
+      continue;
+    }
     const inferred = inferProvider(row.model_id, row.provider);
     if (inferred !== row.provider && inferred !== 'custom') {
       await db.prepare('UPDATE ai_models SET provider=? WHERE id=?').run(inferred, row.id);
@@ -676,8 +688,10 @@ async function seedAndCleanup() {
   if (owner) {
     const groqKey = await getSetting(owner.id, 'admin_groq_key');
     const customKey = await getSetting(owner.id, 'admin_custom_key');
-    const customUrl = await getSetting(owner.id, 'admin_custom_base_url');
-    if (!groqKey && customKey && (guessKeyProvider(customKey) === 'groq' || /groq/i.test(customUrl || ''))) {
+    if (groqKey && looksLikeUrl(groqKey)) {
+      await setSetting(owner.id, 'admin_groq_key', '');
+    }
+    if (guessKeyProvider(customKey) === 'groq' && (!groqKey || looksLikeUrl(groqKey))) {
       await setSetting(owner.id, 'admin_groq_key', customKey);
     }
   }

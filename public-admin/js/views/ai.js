@@ -10,15 +10,15 @@ const FREE_PRESETS = [
   {
     id: 'groq',
     name: 'Groq',
-    blurb: 'সবচেয়ে দ্রুত · কার্ড লাগে না · Llama 3.3 এখানে',
+    blurb: 'সবচেয়ে দ্রুত · কার্ড লাগে না · Llama 3.3 আজ বন্ধ, এখন GPT-OSS',
     signup: 'https://console.groq.com/keys',
     signupLabel: 'console.groq.com → API Keys',
     keyField: 'admin_groq_key',
     keyPlaceholder: 'gsk_...',
     models: [
-      { name: 'Llama 3.3 70B (Groq)', model_id: 'llama-3.3-70b-versatile' },
-      { name: 'Llama 3.1 8B Instant (Groq)', model_id: 'llama-3.1-8b-instant' },
-      { name: 'GPT-OSS 20B (Groq)', model_id: 'openai/gpt-oss-20b' },
+      { name: 'GPT-OSS 120B (Groq)', model_id: 'openai/gpt-oss-120b' },
+      { name: 'GPT-OSS 20B Instant (Groq)', model_id: 'openai/gpt-oss-20b' },
+      { name: 'Qwen 3.6 27B (Groq)', model_id: 'qwen/qwen3.6-27b' },
     ],
   },
   {
@@ -83,7 +83,7 @@ export default async function aiModelsView() {
     const kAnthropic = keyField('admin_anthropic_key', 'Anthropic API key', 'sk-ant-...');
     const kOpenai = keyField('admin_openai_key', 'OpenAI API key', 'sk-...');
     const kCustom = keyField('admin_custom_key', 'Custom / free API key', 'gsk_... / AIza... / sk-or-...');
-    const kCustomUrl = keyField('admin_custom_base_url', 'Custom base URL (OpenAI-compatible)', 'https://api.groq.com/openai/v1');
+    const kCustomUrl = keyField('admin_custom_base_url', 'Custom base URL (other endpoints only — Groq URL already built-in)', 'https://your-endpoint/v1');
 
     const customStatus = el('div', { class: 'muted', style: { fontSize: '13px', margin: '8px 0 16px' } },
       keys.admin_custom_key_set && keys.admin_custom_base_url
@@ -179,7 +179,7 @@ export default async function aiModelsView() {
         { value: 'openai', label: 'OpenAI' },
         { value: 'anthropic', label: 'Anthropic' },
       ], default: 'custom' },
-      { key: 'model_id', label: 'Model ID (exact API string)', placeholder: 'e.g. llama-3.3-70b-versatile' },
+      { key: 'model_id', label: 'Model ID (exact API string)', placeholder: 'e.g. openai/gpt-oss-20b' },
     ];
 
     const addModel = () => formModal({

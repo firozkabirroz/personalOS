@@ -6,7 +6,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { db, getSetting, setSetting } = require('./db');
 const { ownerId, mask, logActivity } = require('./platform');
-const { KEY_FIELDS, PROVIDER_IDS, PROVIDERS, inferProvider, chatCompletionsUrl, guessKeyProvider, keyForProvider } = require('./ai-providers');
+const { KEY_FIELDS, PROVIDER_IDS, PROVIDERS, inferProvider, chatCompletionsUrl, guessKeyProvider, keyForProvider, looksLikeUrl, formatProviderError, GROQ_DEFAULT_MODEL, GROQ_MODEL_MIGRATIONS } = require('./ai-providers');
 
 const STAFF_ROLES = ['owner', 'manager', 'support'];
 
@@ -141,11 +141,15 @@ router.post('/admin/ai-keys', requireAdmin, async (req, res) => {
     for (const key of AI_KEY_FIELDS) {
       const val = req.body?.[key];
       if (typeof val === 'string' && val.trim() && !val.includes('••')) {
-        await setSetting(oid, key, val.trim());
+        const trimmed = val.trim();
+        if (!key.endsWith('_base_url') && looksLikeUrl(trimmed)) {
+          return res.status(400).json({ error: 'That is a base URL, not an API key. Groq key must start with gsk_ (console.groq.com/keys).' });
+        }
+        await setSetting(oid, key, trimmed);
         saved.push(key);
-        const guessed = guessKeyProvider(val.trim());
+        const guessed = guessKeyProvider(trimmed);
         if (guessed && PROVIDERS[guessed] && PROVIDERS[guessed].keyField !== key) {
-          await setSetting(oid, PROVIDERS[guessed].keyField, val.trim());
+          await setSetting(oid, PROVIDERS[guessed].keyField, trimmed);
           saved.push(PROVIDERS[guessed].keyField);
         }
       }
@@ -161,12 +165,19 @@ router.post('/admin/ai-test', requireAdmin, async (req, res) => {
   const oid = await ownerId();
   if (!oid) return res.status(500).json({ error: 'Owner account missing' });
   const body = req.body || {};
-  const provider = PROVIDER_IDS.includes(body.provider) ? body.provider : inferProvider(body.model_id, 'custom');
+  let provider = PROVIDER_IDS.includes(body.provider) ? body.provider : inferProvider(body.model_id, 'custom');
+  const customUrlHint = typeof body.admin_custom_base_url === 'string' ? body.admin_custom_base_url : '';
+  if (provider === 'custom' && /api\.groq\.com/i.test(customUrlHint || await getSetting(oid, 'admin_custom_base_url') || '')) {
+    provider = 'groq';
+  }
   const spec = PROVIDERS[provider] || PROVIDERS.custom;
   const keyField = spec.keyField;
   const liveKey = typeof body[keyField] === 'string' && body[keyField].trim() && !body[keyField].includes('••')
     ? body[keyField].trim()
     : '';
+  if (liveKey && looksLikeUrl(liveKey)) {
+    return res.status(400).json({ error: 'That is a base URL, not an API key. Paste a gsk_ key from https://console.groq.com/keys into the Groq card.' });
+  }
   const packed = {
     groq: await getSetting(oid, 'admin_groq_key'),
     gemini: await getSetting(oid, 'admin_gemini_key'),
@@ -176,6 +187,9 @@ router.post('/admin/ai-test', requireAdmin, async (req, res) => {
     openai: await getSetting(oid, 'admin_openai_key'),
     anthropic: await getSetting(oid, 'admin_anthropic_key'),
   };
+  if (typeof body.admin_custom_key === 'string' && body.admin_custom_key.trim() && !body.admin_custom_key.includes('••')) {
+    packed.custom = body.admin_custom_key.trim();
+  }
   if (liveKey) packed[provider] = liveKey;
   const apiKey = (liveKey && (!guessKeyProvider(liveKey) || guessKeyProvider(liveKey) === provider || provider === 'custom'))
     ? liveKey
@@ -184,8 +198,8 @@ router.post('/admin/ai-test', requireAdmin, async (req, res) => {
     || (typeof body.admin_custom_base_url === 'string' ? body.admin_custom_base_url.trim() : '')
     || await getSetting(oid, 'admin_custom_base_url');
   let modelId = (body.model_id || '').trim();
-  if (provider === 'groq' && (!modelId || inferProvider(modelId, provider) !== 'groq')) {
-    modelId = 'llama-3.3-70b-versatile';
+  if (provider === 'groq' && (!modelId || inferProvider(modelId, provider) !== 'groq' || GROQ_MODEL_MIGRATIONS[modelId])) {
+    modelId = GROQ_DEFAULT_MODEL;
   }
   if (!modelId) {
     modelId = (await db.prepare('SELECT model_id FROM ai_models WHERE provider=? AND active=1 ORDER BY position ASC LIMIT 1').get(provider))?.model_id
@@ -212,8 +226,10 @@ router.post('/admin/ai-test', requireAdmin, async (req, res) => {
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      const msg = data?.error?.message || data?.error || `HTTP ${resp.status}`;
-      return res.status(502).json({ ok: false, error: String(msg), model: modelId, url });
+      const raw = data?.error?.message || data?.error || `HTTP ${resp.status}`;
+      let host = url;
+      try { host = new URL(url).hostname; } catch {}
+      return res.status(502).json({ ok: false, error: formatProviderError(resp.status, raw, { host, model: modelId, apiKey }), model: modelId, url });
     }
     const reply = data.choices?.[0]?.message?.content || JSON.stringify(data).slice(0, 200);
     res.json({ ok: true, reply, model: modelId, url });

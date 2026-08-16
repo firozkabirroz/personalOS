@@ -5,7 +5,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { db, getSetting, setSetting, DATA_DIR } = require('./db');
 const { ownerId } = require('./platform');
-const { PROVIDERS, inferProvider, keyForProvider, chatCompletionsUrl } = require('./ai-providers');
+const { PROVIDERS, inferProvider, keyForProvider, chatCompletionsUrl, formatProviderError } = require('./ai-providers');
 
 const router = express.Router();
 
@@ -311,13 +311,9 @@ async function callOpenAI({ apiKey, model, baseUrl, system, messages, userConten
   try { data = await resp.json(); } catch {}
   if (!resp.ok) {
     const raw = data?.error?.message || data?.error || `API error (${resp.status})`;
-    const msg = String(raw);
-    if (resp.status === 401 || /invalid api key|incorrect api key|unauthorized/i.test(msg)) {
-      let host = url;
-      try { host = new URL(url).hostname; } catch {}
-      throw new Error(`Invalid API Key (${host} / ${model}). Llama Groq-এর জন্য https://console.groq.com/keys থেকে gsk_ কি লাগে — Admin → AI Models → Groq কার্ডে সেভ করুন।`);
-    }
-    throw new Error(msg);
+    let host = url;
+    try { host = new URL(url).hostname; } catch {}
+    throw new Error(formatProviderError(resp.status, raw, { host, model, apiKey }));
   }
   return data.choices?.[0]?.message?.content || '';
 }
