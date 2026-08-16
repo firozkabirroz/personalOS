@@ -1,35 +1,133 @@
 import { get, post, put, del } from '/js/api.js';
 import { el, icon, icons, formModal, confirmModal, toast } from '/js/ui.js';
 
-const PROVIDER_LABEL = { anthropic: 'Anthropic', openai: 'OpenAI', custom: 'Custom (OpenAI-compatible)' };
+const PROVIDER_LABEL = { anthropic: 'Anthropic', openai: 'OpenAI', custom: 'Custom / Free API' };
+
+const FREE_PRESETS = [
+  {
+    id: 'groq',
+    name: 'Groq',
+    blurb: 'সবচেয়ে দ্রুত · কার্ড লাগে না · ফ্রি টিয়ার',
+    signup: 'https://console.groq.com/keys',
+    signupLabel: 'console.groq.com → API Keys',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    models: [
+      { name: 'Llama 3.3 70B (Groq)', model_id: 'llama-3.3-70b-versatile' },
+      { name: 'Llama 3.1 8B Instant (Groq)', model_id: 'llama-3.1-8b-instant' },
+      { name: 'GPT-OSS 20B (Groq)', model_id: 'openai/gpt-oss-20b' },
+    ],
+  },
+  {
+    id: 'gemini',
+    name: 'Google Gemini',
+    blurb: 'ফ্রি টিয়ার বড় · লম্বা কনটেক্সট',
+    signup: 'https://aistudio.google.com/apikey',
+    signupLabel: 'aistudio.google.com → Get API key',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    models: [
+      { name: 'Gemini 2.5 Flash', model_id: 'gemini-2.5-flash' },
+      { name: 'Gemini 2.0 Flash', model_id: 'gemini-2.0-flash' },
+      { name: 'Gemini 2.0 Flash Lite', model_id: 'gemini-2.0-flash-lite' },
+    ],
+  },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    blurb: '২০+ ফ্রি মডেল এক কি-তে',
+    signup: 'https://openrouter.ai/keys',
+    signupLabel: 'openrouter.ai → Keys',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    models: [
+      { name: 'Llama 3.3 70B (OpenRouter free)', model_id: 'meta-llama/llama-3.3-70b-instruct:free' },
+      { name: 'Gemma 3 27B (OpenRouter free)', model_id: 'google/gemma-3-27b-it:free' },
+      { name: 'Mistral Small (OpenRouter free)', model_id: 'mistralai/mistral-small-3.1-24b-instruct:free' },
+    ],
+  },
+  {
+    id: 'cerebras',
+    name: 'Cerebras',
+    blurb: 'খুব দ্রুত Llama · ফ্রি টিয়ার',
+    signup: 'https://cloud.cerebras.ai',
+    signupLabel: 'cloud.cerebras.ai → API key',
+    baseUrl: 'https://api.cerebras.ai/v1',
+    models: [
+      { name: 'Llama 3.3 70B (Cerebras)', model_id: 'llama-3.3-70b' },
+      { name: 'Llama 3.1 8B (Cerebras)', model_id: 'llama3.1-8b' },
+    ],
+  },
+];
 
 export default async function aiModelsView() {
   const body = el('div', {}, el('div', { class: 'muted', style: { padding: '20px' } }, 'Loading…'));
 
   async function render() {
     const [models, keys] = await Promise.all([get('/admin/ai-models'), get('/admin/ai-keys')]);
+    const existingIds = new Set(models.map(m => m.model_id));
 
-    const keyField = (key, label, placeholder) => {
-      const input = el('input', { type: key.endsWith('_base_url') ? 'text' : 'password', placeholder: keys[key + '_set'] ? `Saved: ${keys[key]}` : placeholder });
-      if (key.endsWith('_base_url')) input.value = keys[key] || '';
+    const keyField = (key, label, placeholder, opts = {}) => {
+      const input = el('input', {
+        type: opts.type || (key.endsWith('_base_url') ? 'text' : 'password'),
+        placeholder: keys[key + '_set'] ? `Saved: ${keys[key]}` : placeholder,
+      });
+      if (key.endsWith('_base_url') || opts.prefill) input.value = keys[key] || opts.prefill || '';
       return { key, input, el: el('div', { class: 'field' }, el('label', {}, label), input) };
     };
+
     const kAnthropic = keyField('admin_anthropic_key', 'Anthropic API key', 'sk-ant-...');
     const kOpenai = keyField('admin_openai_key', 'OpenAI API key', 'sk-...');
-    const kCustom = keyField('admin_custom_key', 'Custom provider API key', 'optional');
-    const kCustomUrl = keyField('admin_custom_base_url', 'Custom base URL', 'https://your-endpoint.example.com');
+    const kCustom = keyField('admin_custom_key', 'Custom / free API key', 'gsk_... / AIza... / sk-or-...');
+    const kCustomUrl = keyField('admin_custom_base_url', 'Custom base URL (OpenAI-compatible)', 'https://api.groq.com/openai/v1');
 
-    const saveKeys = el('button', { class: 'btn', onclick: async () => {
+    const saveCustom = async () => {
       const body = {};
-      for (const f of [kAnthropic, kOpenai, kCustom, kCustomUrl]) if (f.input.value.trim()) body[f.key] = f.input.value.trim();
+      if (kCustom.input.value.trim()) body.admin_custom_key = kCustom.input.value.trim();
+      if (kCustomUrl.input.value.trim()) body.admin_custom_base_url = kCustomUrl.input.value.trim();
+      if (!Object.keys(body).length) throw new Error('Base URL বা API key দিন');
       await post('/admin/ai-keys', body);
-      toast('Platform AI keys saved ✓'); render();
-    } }, 'Save platform keys');
+    };
+
+    const addIfMissing = async (presetModels) => {
+      let added = 0;
+      for (const m of presetModels) {
+        if (existingIds.has(m.model_id)) continue;
+        await post('/admin/ai-models', { name: m.name, provider: 'custom', model_id: m.model_id });
+        existingIds.add(m.model_id);
+        added++;
+      }
+      return added;
+    };
+
+    const applyPreset = async (preset) => {
+      kCustomUrl.input.value = preset.baseUrl;
+      await post('/admin/ai-keys', { admin_custom_base_url: preset.baseUrl });
+      const added = await addIfMissing(preset.models);
+      toast(`${preset.name} URL saved` + (added ? ` · ${added} free model(s) added` : ' · models already in catalog'));
+      render();
+    };
+
+    const savePaid = el('button', { class: 'btn ghost', onclick: async () => {
+      const body = {};
+      for (const f of [kAnthropic, kOpenai]) if (f.input.value.trim()) body[f.key] = f.input.value.trim();
+      if (!Object.keys(body).length) return toast('Paste a key first', 'err');
+      await post('/admin/ai-keys', body);
+      toast('Paid provider keys saved ✓'); render();
+    } }, 'Save Anthropic / OpenAI keys');
+
+    const saveCustomBtn = el('button', { class: 'btn', onclick: async () => {
+      try {
+        await saveCustom();
+        toast('Custom / free API saved ✓'); render();
+      } catch (e) { toast(e.message, 'err'); }
+    } }, 'Save custom API');
 
     const modelFields = () => [
-      { key: 'name', label: 'Display name', placeholder: 'e.g. GPT-4o mini' },
-      { key: 'provider', label: 'Provider', type: 'select', options: [{ value: 'anthropic', label: 'Anthropic' }, { value: 'openai', label: 'OpenAI' }, { value: 'custom', label: 'Custom (OpenAI-compatible)' }], default: 'openai' },
-      { key: 'model_id', label: 'Model ID (exact API string)', placeholder: 'e.g. gpt-4o-mini' },
+      { key: 'name', label: 'Display name', placeholder: 'e.g. Llama 3.3 70B' },
+      { key: 'provider', label: 'Provider', type: 'select', options: [
+        { value: 'custom', label: 'Custom / Free API' },
+        { value: 'openai', label: 'OpenAI' },
+        { value: 'anthropic', label: 'Anthropic' },
+      ], default: 'custom' },
+      { key: 'model_id', label: 'Model ID (exact API string)', placeholder: 'e.g. llama-3.3-70b-versatile' },
     ];
 
     const addModel = () => formModal({
@@ -44,17 +142,57 @@ export default async function aiModelsView() {
       onSubmit: async (v) => { await put(`/admin/ai-models/${m.id}`, v); toast('Updated ✓'); render(); },
     });
 
+    const presetCards = FREE_PRESETS.map(p => el('div', { class: 'card', style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+      el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' } },
+        el('b', {}, p.name), el('span', { class: 'badge green' }, 'Free')),
+      el('p', { class: 'muted', style: { margin: 0, fontSize: '13px' } }, p.blurb),
+      el('div', { class: 'muted', style: { fontFamily: 'monospace', fontSize: '11.5px', wordBreak: 'break-all' } }, p.baseUrl),
+      el('a', { href: p.signup, target: '_blank', rel: 'noopener', class: 'muted', style: { fontSize: '12.5px' } }, '↗ ' + p.signupLabel),
+      el('button', { class: 'btn sm', onclick: () => applyPreset(p) }, `Use ${p.name} + add models`)));
+
+    const suggestionRows = FREE_PRESETS.flatMap(p => p.models.map(m => {
+      const already = existingIds.has(m.model_id);
+      return el('div', { class: 'list-row' },
+        el('div', { class: 'grow' },
+          el('div', { class: 'title' }, m.name),
+          el('div', { class: 'sub' }, `${p.name} · ${m.model_id}`)),
+        already
+          ? el('span', { class: 'badge green' }, 'Added')
+          : el('button', { class: 'btn ghost sm', onclick: async () => {
+              kCustomUrl.input.value = p.baseUrl;
+              await post('/admin/ai-keys', { admin_custom_base_url: p.baseUrl });
+              await post('/admin/ai-models', { name: m.name, provider: 'custom', model_id: m.model_id });
+              toast(`${m.name} added · ${p.name} URL set`);
+              render();
+            } }, 'Add'));
+    }));
+
     body.replaceChildren(el('div', {},
+      el('div', { class: 'card', style: { marginBottom: '16px', borderColor: 'var(--accent)' } },
+        el('h3', {}, icon('ai'), 'Custom / Free API'),
+        el('p', { class: 'muted', style: { marginTop: '-8px', marginBottom: '14px' } },
+          'OpenAI-compatible যেকোনো ফ্রি API এখানে লাগান — Groq, Gemini, OpenRouter, Cerebras, বা নিজের endpoint। নিচের প্রিসেটে ক্লিক করলে URL ও মডেল অটো সেট হবে; তারপর ওই সাইট থেকে ফ্রি API key পেস্ট করুন।'),
+        el('div', { class: 'field-row' }, kCustomUrl.el, kCustom.el),
+        el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' } }, saveCustomBtn),
+        el('h3', { style: { fontSize: '14px', marginBottom: '10px' } }, 'ফ্রি প্রোভাইডার প্রিসেট'),
+        el('div', { class: 'grid cols-2', style: { marginBottom: '8px' } }, presetCards)),
+
       el('div', { class: 'card', style: { marginBottom: '16px' } },
-        el('h3', {}, icon('key'), 'Platform AI keys'),
-        el('p', { class: 'muted', style: { marginTop: '-8px', marginBottom: '14px' } }, 'One key per provider covers every model below. Every model is free and unlimited for every user — the API usage is billed to these keys.'),
+        el('h3', {}, 'Suggested free models'),
+        el('p', { class: 'muted', style: { marginTop: '-8px', marginBottom: '12px' } },
+          'Add চাপলে মডেল ক্যাটালগে যোগ হবে এবং সেই প্রোভাইডারের base URL সেট হবে। তারপর উপরে API key সেভ করুন।'),
+        el('div', { class: 'stack' }, suggestionRows)),
+
+      el('div', { class: 'card', style: { marginBottom: '16px' } },
+        el('h3', {}, icon('key'), 'Paid providers (optional)'),
+        el('p', { class: 'muted', style: { marginTop: '-8px', marginBottom: '14px' } }, 'শুধু চাইলে Anthropic / OpenAI কি দিন — ফ্রি API-এর জন্য দরকার নেই।'),
         el('div', { class: 'field-row' }, kAnthropic.el, kOpenai.el),
-        el('div', { class: 'field-row' }, kCustom.el, kCustomUrl.el),
-        saveKeys),
+        savePaid),
+
       el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' } },
         el('h3', { style: { margin: 0 } }, 'Model catalog'),
         el('button', { class: 'btn', onclick: addModel }, icon('plus'), 'Add model')),
-      el('div', { class: 'grid cols-3' }, models.map(m => {
+      el('div', { class: 'grid cols-3' }, models.length ? models.map(m => {
         const editBtn = el('button', { class: 'icon-btn', onclick: () => editModel(m) }); editBtn.innerHTML = icons.edit;
         const delBtn = el('button', { class: 'icon-btn', onclick: () => confirmModal(`Delete model "${m.name}"?`, async () => {
           try { await del(`/admin/ai-models/${m.id}`); toast('Deleted'); render(); } catch (e) { toast(e.message, 'err'); }
@@ -64,16 +202,17 @@ export default async function aiModelsView() {
           el('div', { style: { display: 'flex', justifyContent: 'space-between' } },
             el('b', {}, m.name), el('div', { style: { display: 'flex', gap: '4px' } }, editBtn, delBtn)),
           el('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
-            el('span', { class: 'badge accent' }, PROVIDER_LABEL[m.provider]),
+            el('span', { class: 'badge accent' }, PROVIDER_LABEL[m.provider] || m.provider),
             el('span', { class: 'badge green' }, 'Free · Unlimited')),
           el('div', { class: 'muted', style: { fontFamily: 'monospace', fontSize: '12px' } }, m.model_id),
           toggleBtn);
-      }))));
+      }) : el('p', { class: 'muted' }, 'No models yet — pick a free preset above.')),
+    ));
   }
   await render();
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, 'AI Models'), el('p', {}, 'Platform keys + model catalog — every model is free for every user'))),
+      el('div', {}, el('h2', {}, 'AI Models'), el('p', {}, 'Connect a free API (Groq / Gemini / OpenRouter) — every user can use it'))),
     body);
 }

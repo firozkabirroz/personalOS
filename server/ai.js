@@ -141,11 +141,15 @@ async function resolveAIRoute(modelDbId) {
   const apiKey = oid ? await getSetting(oid, `admin_${model.provider}_key`) : '';
   const baseUrl = model.provider === 'custom' && oid ? await getSetting(oid, 'admin_custom_base_url') : '';
 
-  if (!apiKey) {
+  if (model.provider === 'custom' && !baseUrl) {
+    return { error: 'Custom API base URL set নেই — Admin → AI Models-এ Groq / Gemini / OpenRouter URL দিন।' };
+  }
+  // Custom/free OpenAI-compatible endpoints (Ollama, some gateways) work without a key.
+  if (!apiKey && model.provider !== 'custom') {
     return { error: `AI service সাময়িকভাবে বন্ধ আছে — admin কে "${model.provider}" key যোগ করতে বলুন।` };
   }
 
-  return { provider: model.provider, apiKey, model: model.model_id, baseUrl, modelRow: model };
+  return { provider: model.provider, apiKey: apiKey || 'not-needed', model: model.model_id, baseUrl, modelRow: model };
 }
 
 function fileToContentPart(file) {
@@ -215,8 +219,15 @@ async function callAnthropic({ apiKey, model, system, messages, userContent }) {
   return (data.content || []).map(b => b.text || '').join('');
 }
 
+function chatCompletionsUrl(baseUrl) {
+  const raw = (baseUrl || 'https://api.openai.com').replace(/\/+$/, '');
+  if (/\/chat\/completions$/i.test(raw)) return raw;
+  if (/\/v1$/i.test(raw) || /\/openai$/i.test(raw)) return raw + '/chat/completions';
+  return raw + '/v1/chat/completions';
+}
+
 async function callOpenAI({ apiKey, model, baseUrl, system, messages, userContent }) {
-  const url = (baseUrl || 'https://api.openai.com').replace(/\/+$/, '') + '/v1/chat/completions';
+  const url = chatCompletionsUrl(baseUrl);
   const formatted = messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content }));
   if (userContent && typeof userContent === 'object') {
     const content = [{ type: 'text', text: userContent.text || '' }];
