@@ -134,11 +134,76 @@ router.get('/admin/ai-keys', requireAdmin, async (req, res) => {
 
 router.post('/admin/ai-keys', requireAdmin, async (req, res) => {
   const oid = await ownerId();
-  for (const key of AI_KEY_FIELDS) {
-    const val = req.body[key];
-    if (typeof val === 'string' && !val.includes('••')) await setSetting(oid, key, val.trim());
+  if (!oid) return res.status(500).json({ error: 'Owner account missing — cannot save platform keys' });
+  const saved = [];
+  try {
+    for (const key of AI_KEY_FIELDS) {
+      const val = req.body?.[key];
+      if (typeof val === 'string' && val.trim() && !val.includes('••')) {
+        await setSetting(oid, key, val.trim());
+        saved.push(key);
+      }
+    }
+  } catch (e) {
+    return res.status(500).json({ error: 'Failed to save API settings: ' + e.message });
   }
-  res.json({ ok: true });
+  if (!saved.length) return res.status(400).json({ error: 'Nothing to save — paste a key or base URL' });
+  res.json({ ok: true, saved });
+});
+
+function chatCompletionsUrl(baseUrl) {
+  const raw = (baseUrl || 'https://api.openai.com').replace(/\/+$/, '');
+  if (/\/chat\/completions$/i.test(raw)) return raw;
+  if (/\/v1$/i.test(raw) || /\/openai$/i.test(raw)) return raw + '/chat/completions';
+  return raw + '/v1/chat/completions';
+}
+
+router.post('/admin/ai-test', requireAdmin, async (req, res) => {
+  const oid = await ownerId();
+  if (!oid) return res.status(500).json({ error: 'Owner account missing' });
+  const body = req.body || {};
+  const liveKey = typeof body.admin_custom_key === 'string' && body.admin_custom_key.trim() && !body.admin_custom_key.includes('••')
+    ? body.admin_custom_key.trim() : '';
+  const liveUrl = typeof body.admin_custom_base_url === 'string' ? body.admin_custom_base_url.trim() : '';
+  const apiKey = liveKey || await getSetting(oid, 'admin_custom_key');
+  const baseUrl = liveUrl || await getSetting(oid, 'admin_custom_base_url');
+  let modelId = (body.model_id || '').trim();
+  if (!modelId) {
+    modelId = (await db.prepare("SELECT model_id FROM ai_models WHERE provider='custom' AND active=1 ORDER BY position ASC LIMIT 1").get())?.model_id
+      || (await db.prepare('SELECT model_id FROM ai_models WHERE active=1 ORDER BY position ASC LIMIT 1').get())?.model_id
+      || '';
+  }
+  if (!baseUrl) return res.status(400).json({ error: 'Save a custom base URL first (or pick a free preset).' });
+  if (!apiKey) return res.status(400).json({ error: 'Save an API key first, then Test.' });
+  if (!modelId) return res.status(400).json({ error: 'Add a model to the catalog first.' });
+
+  const url = chatCompletionsUrl(baseUrl);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 20000);
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      signal: ac.signal,
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [{ role: 'user', content: 'Reply with the single word: pong' }],
+        max_tokens: 16,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const msg = data?.error?.message || data?.error || `HTTP ${resp.status}`;
+      return res.status(502).json({ ok: false, error: String(msg), model: modelId, url });
+    }
+    const reply = data.choices?.[0]?.message?.content || JSON.stringify(data).slice(0, 200);
+    res.json({ ok: true, reply, model: modelId, url });
+  } catch (e) {
+    const msg = e.name === 'AbortError' ? 'Request timed out (20s)' : e.message;
+    res.status(502).json({ ok: false, error: msg, model: modelId, url });
+  } finally {
+    clearTimeout(timer);
+  }
 });
 
 // ============ AI model catalog — every model is free for every user ============

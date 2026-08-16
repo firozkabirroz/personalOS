@@ -78,12 +78,28 @@ export default async function aiModelsView() {
     const kCustom = keyField('admin_custom_key', 'Custom / free API key', 'gsk_... / AIza... / sk-or-...');
     const kCustomUrl = keyField('admin_custom_base_url', 'Custom base URL (OpenAI-compatible)', 'https://api.groq.com/openai/v1');
 
+    const customStatus = el('div', { class: 'muted', style: { fontSize: '13px', margin: '8px 0 16px' } },
+      keys.admin_custom_key_set && keys.admin_custom_base_url
+        ? '✓ Saved — key stored, URL: ' + keys.admin_custom_base_url
+        : keys.admin_custom_base_url
+          ? 'URL saved, but API key missing — paste the key then Save.'
+          : 'Not saved yet. Pick a preset, paste the free API key, then Save & Test.');
+
     const saveCustom = async () => {
       const body = {};
       if (kCustom.input.value.trim()) body.admin_custom_key = kCustom.input.value.trim();
       if (kCustomUrl.input.value.trim()) body.admin_custom_base_url = kCustomUrl.input.value.trim();
       if (!Object.keys(body).length) throw new Error('Base URL বা API key দিন');
-      await post('/admin/ai-keys', body);
+      const result = await post('/admin/ai-keys', body);
+      if (!result?.ok) throw new Error('Save failed');
+      return result;
+    };
+
+    const testCustom = async () => {
+      const body = {};
+      if (kCustom.input.value.trim()) body.admin_custom_key = kCustom.input.value.trim();
+      if (kCustomUrl.input.value.trim()) body.admin_custom_base_url = kCustomUrl.input.value.trim();
+      return post('/admin/ai-test', body);
     };
 
     const addIfMissing = async (presetModels) => {
@@ -99,10 +115,14 @@ export default async function aiModelsView() {
 
     const applyPreset = async (preset) => {
       kCustomUrl.input.value = preset.baseUrl;
-      await post('/admin/ai-keys', { admin_custom_base_url: preset.baseUrl });
-      const added = await addIfMissing(preset.models);
-      toast(`${preset.name} URL saved` + (added ? ` · ${added} free model(s) added` : ' · models already in catalog'));
-      render();
+      try {
+        await post('/admin/ai-keys', { admin_custom_base_url: preset.baseUrl });
+        const added = await addIfMissing(preset.models);
+        toast(`${preset.name} URL saved` + (added ? ` · ${added} free model(s) added` : ' · models already in catalog'));
+        render();
+      } catch (e) {
+        toast('Save failed: ' + e.message, 'err');
+      }
     };
 
     const savePaid = el('button', { class: 'btn ghost', onclick: async () => {
@@ -114,11 +134,31 @@ export default async function aiModelsView() {
     } }, 'Save Anthropic / OpenAI keys');
 
     const saveCustomBtn = el('button', { class: 'btn', onclick: async () => {
+      saveCustomBtn.disabled = true;
       try {
         await saveCustom();
-        toast('Custom / free API saved ✓'); render();
+        toast('API saved ✓ — refresh-এও থাকবে');
+        render();
       } catch (e) { toast(e.message, 'err'); }
-    } }, 'Save custom API');
+      finally { saveCustomBtn.disabled = false; }
+    } }, 'Save API');
+
+    const testCustomBtn = el('button', { class: 'btn ghost', onclick: async () => {
+      testCustomBtn.disabled = true;
+      testCustomBtn.textContent = 'Testing…';
+      try {
+        if (kCustom.input.value.trim() || kCustomUrl.input.value.trim()) {
+          try { await saveCustom(); } catch { /* test can still use already-saved values */ }
+        }
+        const result = await testCustom();
+        toast('Connected ✓  ' + (result.model || '') + (result.reply ? ' → ' + String(result.reply).slice(0, 80) : ''));
+        render();
+      } catch (e) { toast('Test failed: ' + e.message, 'err'); }
+      finally {
+        testCustomBtn.disabled = false;
+        testCustomBtn.textContent = 'Test connection';
+      }
+    } }, 'Test connection');
 
     const modelFields = () => [
       { key: 'name', label: 'Display name', placeholder: 'e.g. Llama 3.3 70B' },
@@ -173,7 +213,8 @@ export default async function aiModelsView() {
         el('p', { class: 'muted', style: { marginTop: '-8px', marginBottom: '14px' } },
           'OpenAI-compatible যেকোনো ফ্রি API এখানে লাগান — Groq, Gemini, OpenRouter, Cerebras, বা নিজের endpoint। নিচের প্রিসেটে ক্লিক করলে URL ও মডেল অটো সেট হবে; তারপর ওই সাইট থেকে ফ্রি API key পেস্ট করুন।'),
         el('div', { class: 'field-row' }, kCustomUrl.el, kCustom.el),
-        el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '16px' } }, saveCustomBtn),
+        el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } }, saveCustomBtn, testCustomBtn),
+        customStatus,
         el('h3', { style: { fontSize: '14px', marginBottom: '10px' } }, 'ফ্রি প্রোভাইডার প্রিসেট'),
         el('div', { class: 'grid cols-2', style: { marginBottom: '8px' } }, presetCards)),
 

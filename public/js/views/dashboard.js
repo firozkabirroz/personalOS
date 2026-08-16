@@ -3,8 +3,10 @@ import { el, icon, icons, fmtDate, fmtMoney, daysUntil, todayStr, countUp } from
 import { navigate } from '../app.js';
 
 export default async function dashboard() {
-  const d = await get('/dashboard?date=' + todayStr());
-  const settings = await get('/settings');
+  const [d, settings] = await Promise.all([
+    get('/dashboard?date=' + todayStr()),
+    get('/settings'),
+  ]);
   const cur = settings.currency || '$';
 
   const greeting = (() => {

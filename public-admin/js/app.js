@@ -1,34 +1,28 @@
 import { get, post, setToken, token } from '/js/api.js';
 import { el, icon, icons, toast, skeletonPage } from '/js/ui.js';
 
-import overview from './views/overview.js';
-import users from './views/users.js';
-import aiModels from './views/ai.js';
-import integrations from './views/integrations.js';
-import activity from './views/activity.js';
-import support from './views/support.js';
-import team from './views/team.js';
+const lazy = (load, ...args) => async () => (await load()).default(...args);
 
 const root = document.getElementById('root');
 export let currentUser = null;
 
 const NAV = [
   { group: 'Overview', roles: ['owner', 'manager'], items: [
-    { route: 'overview', label: 'Overview', icon: 'dashboard', view: overview },
+    { route: 'overview', label: 'Overview', icon: 'dashboard', view: lazy(() => import('./views/overview.js')) },
   ]},
   { group: 'Users', roles: ['owner', 'manager'], items: [
-    { route: 'users', label: 'Users', icon: 'team', view: users },
+    { route: 'users', label: 'Users', icon: 'team', view: lazy(() => import('./views/users.js')) },
   ]},
   { group: 'Platform', roles: ['owner', 'manager'], items: [
-    { route: 'ai', label: 'AI Models', icon: 'ai', view: aiModels },
-    { route: 'integrations', label: 'Integrations', icon: 'link', view: integrations },
-    { route: 'activity', label: 'Activity', icon: 'running', view: activity },
+    { route: 'ai', label: 'AI Models', icon: 'ai', view: lazy(() => import('./views/ai.js')) },
+    { route: 'integrations', label: 'Integrations', icon: 'link', view: lazy(() => import('./views/integrations.js')) },
+    { route: 'activity', label: 'Activity', icon: 'running', view: lazy(() => import('./views/activity.js')) },
   ]},
   { group: 'Support', items: [
-    { route: 'support', label: 'Support', icon: 'ticket', view: support },
+    { route: 'support', label: 'Support', icon: 'ticket', view: lazy(() => import('./views/support.js')) },
   ]},
   { group: 'Team', roles: ['owner'], items: [
-    { route: 'team', label: 'Team', icon: 'shield', view: team },
+    { route: 'team', label: 'Team', icon: 'shield', view: lazy(() => import('./views/team.js')) },
   ]},
 ];
 

@@ -1,23 +1,7 @@
 import { api, post, setToken, token } from './api.js';
 import { el, icon, icons, toast, skeletonPage } from './ui.js';
 
-import dashboard from './views/dashboard.js';
-import tasks from './views/tasks.js';
-import projects from './views/projects.js';
-import plans from './views/plans.js';
-import ideas from './views/ideas.js';
-import files from './views/files.js';
-import calendar from './views/calendar.js';
-import expenses from './views/expenses.js';
-import habits from './views/habits.js';
-import health from './views/health.js';
-import travel from './views/travel.js';
-import ai from './views/ai.js';
-import settings from './views/settings.js';
-import finance from './views/finance.js';
-import debts from './views/debts.js';
-import invest from './views/invest.js';
-import support from './views/support.js';
+const lazy = (load, ...args) => async () => (await load()).default(...args);
 
 const root = document.getElementById('root');
 export let currentUser = null;
@@ -28,38 +12,38 @@ const PERSONAL_ROLES = ['user', 'owner'];
 
 const NAV = [
   { group: 'Overview', roles: PERSONAL_ROLES, items: [
-    { route: 'dashboard', label: 'Dashboard', icon: 'dashboard', view: dashboard },
+    { route: 'dashboard', label: 'Dashboard', icon: 'dashboard', view: lazy(() => import('./views/dashboard.js')) },
   ]},
   { group: 'Planner', roles: PERSONAL_ROLES, items: [
-    { route: 'tasks', label: 'Daily Tasks', icon: 'tasks', view: tasks },
-    { route: 'calendar', label: 'Calendar', icon: 'calendar', view: calendar },
+    { route: 'tasks', label: 'Daily Tasks', icon: 'tasks', view: lazy(() => import('./views/tasks.js')) },
+    { route: 'calendar', label: 'Calendar', icon: 'calendar', view: lazy(() => import('./views/calendar.js')) },
   ]},
   { group: 'Projects', roles: PERSONAL_ROLES, items: [
-    { route: 'running', label: 'Running Projects', icon: 'running', view: () => projects('running') },
-    { route: 'upcoming', label: 'Upcoming Projects', icon: 'upcoming', view: () => projects('upcoming') },
-    { route: 'plans', label: 'Next Plans', icon: 'plan', view: plans },
-    { route: 'ideas', label: 'Brainstorming', icon: 'idea', view: ideas },
-    { route: 'files', label: 'Project Files', icon: 'folder', view: files },
+    { route: 'running', label: 'Running Projects', icon: 'running', view: lazy(() => import('./views/projects.js'), 'running') },
+    { route: 'upcoming', label: 'Upcoming Projects', icon: 'upcoming', view: lazy(() => import('./views/projects.js'), 'upcoming') },
+    { route: 'plans', label: 'Next Plans', icon: 'plan', view: lazy(() => import('./views/plans.js')) },
+    { route: 'ideas', label: 'Brainstorming', icon: 'idea', view: lazy(() => import('./views/ideas.js')) },
+    { route: 'files', label: 'Project Files', icon: 'folder', view: lazy(() => import('./views/files.js')) },
   ]},
   { group: 'Finance', roles: PERSONAL_ROLES, items: [
-    { route: 'finance', label: 'Finance Overview', icon: 'finance', view: finance },
-    { route: 'expenses', label: 'Income & Expenses', icon: 'expense', view: expenses },
-    { route: 'debts', label: 'Debts & Loans', icon: 'debt', view: debts },
-    { route: 'invest', label: 'Investments', icon: 'invest', view: invest },
+    { route: 'finance', label: 'Finance Overview', icon: 'finance', view: lazy(() => import('./views/finance.js')) },
+    { route: 'expenses', label: 'Income & Expenses', icon: 'expense', view: lazy(() => import('./views/expenses.js')) },
+    { route: 'debts', label: 'Debts & Loans', icon: 'debt', view: lazy(() => import('./views/debts.js')) },
+    { route: 'invest', label: 'Investments', icon: 'invest', view: lazy(() => import('./views/invest.js')) },
   ]},
   { group: 'Life', roles: PERSONAL_ROLES, items: [
-    { route: 'habits', label: 'Habit Tracker', icon: 'habit', view: habits },
-    { route: 'health', label: 'Health Dashboard', icon: 'health', view: health },
-    { route: 'travel', label: 'Travel Planner', icon: 'travel', view: travel },
+    { route: 'habits', label: 'Habit Tracker', icon: 'habit', view: lazy(() => import('./views/habits.js')) },
+    { route: 'health', label: 'Health Dashboard', icon: 'health', view: lazy(() => import('./views/health.js')) },
+    { route: 'travel', label: 'Travel Planner', icon: 'travel', view: lazy(() => import('./views/travel.js')) },
   ]},
   { group: 'Intelligence', roles: PERSONAL_ROLES, items: [
-    { route: 'ai', label: 'AI Assistant', icon: 'ai', view: ai },
+    { route: 'ai', label: 'AI Assistant', icon: 'ai', view: lazy(() => import('./views/ai.js')) },
   ]},
   { group: 'Support', items: [
-    { route: 'support', label: 'Support', icon: 'ticket', view: support },
+    { route: 'support', label: 'Support', icon: 'ticket', view: lazy(() => import('./views/support.js')) },
   ]},
   { group: 'System', items: [
-    { route: 'settings', label: 'Settings', icon: 'settings', view: settings },
+    { route: 'settings', label: 'Settings', icon: 'settings', view: lazy(() => import('./views/settings.js')) },
   ]},
 ];
 

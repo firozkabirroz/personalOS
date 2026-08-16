@@ -88,7 +88,8 @@ function wrapNeon() {
         },
         run: async (...args) => {
           let q = sql;
-          if (/^\s*insert\b/i.test(q) && !/\breturning\b/i.test(q)) q += ' RETURNING id';
+          // settings (and similar) have no `id` column — RETURNING * works for both.
+          if (/^\s*insert\b/i.test(q) && !/\breturning\b/i.test(q)) q += ' RETURNING *';
           const result = await query(q, args);
           const row = result.rows && result.rows[0];
           return {
@@ -640,13 +641,6 @@ async function seedAndCleanup() {
     await db.prepare('UPDATE chats SET conversation_id=? WHERE user_id=? AND conversation_id IS NULL').run(info.lastInsertRowid, user_id);
   }
 
-  await db.exec('DROP TABLE IF EXISTS credit_packs');
-  await db.exec('DROP TABLE IF EXISTS credit_ledger');
-  await db.exec('DROP TABLE IF EXISTS payments');
-  await db.exec('DROP TABLE IF EXISTS saas_plans');
-  await db.exec('DROP TABLE IF EXISTS ai_usage');
-  await db.exec("UPDATE users SET plan='lifetime', plan_expires=''");
-
   if (!(await db.prepare('SELECT id FROM ai_models LIMIT 1').get())) {
     const insModel = db.prepare('INSERT INTO ai_models (name, provider, model_id, position) VALUES (?,?,?,?)');
     await insModel.run('GPT-4o mini', 'openai', 'gpt-4o-mini', 1);
@@ -672,8 +666,16 @@ async function seedAndCleanup() {
 }
 
 async function init() {
-  if (useNeon) await db.exec(PG_SCHEMA);
-  else await migrateSqlite();
+  if (useNeon) {
+    let hasUsers = false;
+    try {
+      const row = await db.prepare("SELECT to_regclass('public.users') AS t").get();
+      hasUsers = !!(row && row.t);
+    } catch { /* empty database */ }
+    if (!hasUsers) await db.exec(PG_SCHEMA);
+  } else {
+    await migrateSqlite();
+  }
   await seedAndCleanup();
 }
 
@@ -688,6 +690,7 @@ async function getSetting(userId, key) {
 }
 
 async function setSetting(userId, key, value) {
+  if (userId == null || userId === '') throw new Error('Cannot save setting without a user id');
   await db.prepare(`INSERT INTO settings (user_id, key, value) VALUES (?,?,?)
     ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value`).run(userId, key, String(value ?? ''));
 }
