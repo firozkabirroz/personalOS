@@ -3,9 +3,9 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { db, getSetting, DATA_DIR } = require('./db');
+const { db, getSetting, setSetting, DATA_DIR } = require('./db');
 const { ownerId } = require('./platform');
-const { PROVIDERS, inferProvider, guessKeyProvider, chatCompletionsUrl } = require('./ai-providers');
+const { PROVIDERS, inferProvider, keyForProvider, chatCompletionsUrl } = require('./ai-providers');
 
 const router = express.Router();
 
@@ -149,27 +149,22 @@ async function loadPlatformAI(oid) {
   await Promise.all(Object.entries(fields).map(async ([name, field]) => {
     out[name] = normalizeKey(await getSetting(oid, field));
   }));
+  const groq = keyForProvider('groq', out);
+  if (groq && groq !== out.groq) {
+    out.groq = groq;
+    try { await setSetting(oid, 'admin_groq_key', groq); } catch { /* ignore */ }
+  }
   return out;
-}
-
-function hostOf(url) {
-  try { return new URL(url).hostname; } catch { return ''; }
 }
 
 function credsFor(model, keys) {
   if (!model) return { provider: 'custom', apiKey: '', baseUrl: '' };
   const provider = inferProvider(model.model_id, model.provider);
   const spec = PROVIDERS[provider] || PROVIDERS.custom;
-  if (provider === 'anthropic') return { provider, apiKey: keys.anthropic, baseUrl: '' };
-  if (provider === 'openai') return { provider, apiKey: keys.openai, baseUrl: spec.baseUrl };
+  if (provider === 'anthropic') return { provider, apiKey: keyForProvider('anthropic', keys), baseUrl: '' };
+  if (provider === 'openai') return { provider, apiKey: keyForProvider('openai', keys), baseUrl: spec.baseUrl };
   if (provider === 'custom') return { provider, apiKey: keys.custom, baseUrl: keys.customUrl };
-
-  let apiKey = keys[provider] || '';
-  if (!apiKey && guessKeyProvider(keys.custom) === provider) apiKey = keys.custom;
-  if (!apiKey && keys.custom && spec.baseUrl && hostOf(keys.customUrl) && hostOf(keys.customUrl) === hostOf(spec.baseUrl)) {
-    apiKey = keys.custom;
-  }
-  return { provider, apiKey, baseUrl: spec.baseUrl };
+  return { provider, apiKey: keyForProvider(provider, keys), baseUrl: spec.baseUrl };
 }
 
 function modelReady(model, keys) {
@@ -186,7 +181,7 @@ async function listActiveModels() {
       WHEN 'custom' THEN 4 ELSE 5 END, position ASC, id ASC`).all();
   const keys = await loadPlatformAI(await ownerId());
   const ready = rows.filter((m) => modelReady(m, keys));
-  return ready.length ? ready : rows.filter((m) => ['groq', 'gemini', 'openrouter', 'cerebras', 'custom'].includes(inferProvider(m.model_id, m.provider)));
+  return ready;
 }
 
 async function resolveModel(modelDbId, keys) {
@@ -198,7 +193,7 @@ async function resolveModel(modelDbId, keys) {
     ORDER BY CASE provider
       WHEN 'groq' THEN 0 WHEN 'gemini' THEN 1 WHEN 'openrouter' THEN 2 WHEN 'cerebras' THEN 3
       WHEN 'custom' THEN 4 ELSE 5 END, position ASC, id ASC`).all();
-  return rows.find((m) => modelReady(m, keys)) || rows[0] || null;
+  return rows.find((m) => modelReady(m, keys)) || null;
 }
 
 /** Resolve platform key + model for a chat — everything is free for everyone. */
@@ -318,7 +313,9 @@ async function callOpenAI({ apiKey, model, baseUrl, system, messages, userConten
     const raw = data?.error?.message || data?.error || `API error (${resp.status})`;
     const msg = String(raw);
     if (resp.status === 401 || /invalid api key|incorrect api key|unauthorized/i.test(msg)) {
-      throw new Error('Invalid API Key — Admin → AI Models-এ যে প্রোভাইডার ব্যবহার করছেন (Groq/Gemini/OpenRouter) সেই key সেভ করুন। OpenAI/Claude মডেল সিলেক্ট করলে এই এরর আসে যদি সেই paid key না থাকে।');
+      let host = url;
+      try { host = new URL(url).hostname; } catch {}
+      throw new Error(`Invalid API Key (${host} / ${model}). Llama Groq-এর জন্য https://console.groq.com/keys থেকে gsk_ কি লাগে — Admin → AI Models → Groq কার্ডে সেভ করুন।`);
     }
     throw new Error(msg);
   }

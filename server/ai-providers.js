@@ -59,14 +59,15 @@ function inferProvider(modelId, storedProvider) {
     return 'openrouter';
   }
   if (id.startsWith('gemini-')) return 'gemini';
-  if (id === 'llama-3.3-70b' || id === 'llama3.1-8b' || id === 'llama3.3-70b') return 'cerebras';
   if (
     id === 'llama-3.3-70b-versatile' ||
+    id === 'llama-3.3-70b' ||
     id === 'llama-3.1-8b-instant' ||
     id.includes('gpt-oss') ||
     id.startsWith('llama-3.2') ||
     id.startsWith('llama-3.3')
   ) return 'groq';
+  if (id === 'llama3.1-8b' || id === 'llama3.3-70b') return 'cerebras';
   if (storedProvider && PROVIDERS[storedProvider]) return storedProvider;
   return 'custom';
 }
@@ -89,7 +90,24 @@ function guessKeyProvider(key) {
   return '';
 }
 
+function keySlots(keys) {
+  return [keys.groq, keys.custom, keys.openai, keys.gemini, keys.openrouter, keys.cerebras, keys.anthropic]
+    .map((k) => String(k || '').trim())
+    .filter(Boolean);
+}
+
+/** Pick a key that actually belongs to this provider (prefix), never a mismatched one. */
+function keyForProvider(provider, keys) {
+  const prefixed = keySlots(keys).find((k) => guessKeyProvider(k) === provider);
+  if (prefixed) return prefixed;
+  const slot = String(keys[provider] || '').trim();
+  if (!slot) return '';
+  const guessed = guessKeyProvider(slot);
+  if (!guessed || guessed === provider) return slot;
+  return '';
+}
+
 module.exports = {
   PROVIDERS, KEY_FIELDS, PROVIDER_IDS,
-  inferProvider, chatCompletionsUrl, guessKeyProvider,
+  inferProvider, chatCompletionsUrl, guessKeyProvider, keyForProvider,
 };

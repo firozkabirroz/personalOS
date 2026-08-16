@@ -6,7 +6,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { db, getSetting, setSetting } = require('./db');
 const { ownerId, mask, logActivity } = require('./platform');
-const { KEY_FIELDS, PROVIDER_IDS, PROVIDERS, inferProvider, chatCompletionsUrl } = require('./ai-providers');
+const { KEY_FIELDS, PROVIDER_IDS, PROVIDERS, inferProvider, chatCompletionsUrl, guessKeyProvider, keyForProvider } = require('./ai-providers');
 
 const STAFF_ROLES = ['owner', 'manager', 'support'];
 
@@ -143,6 +143,11 @@ router.post('/admin/ai-keys', requireAdmin, async (req, res) => {
       if (typeof val === 'string' && val.trim() && !val.includes('••')) {
         await setSetting(oid, key, val.trim());
         saved.push(key);
+        const guessed = guessKeyProvider(val.trim());
+        if (guessed && PROVIDERS[guessed] && PROVIDERS[guessed].keyField !== key) {
+          await setSetting(oid, PROVIDERS[guessed].keyField, val.trim());
+          saved.push(PROVIDERS[guessed].keyField);
+        }
       }
     }
   } catch (e) {
@@ -161,13 +166,27 @@ router.post('/admin/ai-test', requireAdmin, async (req, res) => {
   const keyField = spec.keyField;
   const liveKey = typeof body[keyField] === 'string' && body[keyField].trim() && !body[keyField].includes('••')
     ? body[keyField].trim()
-    : (typeof body.admin_custom_key === 'string' && body.admin_custom_key.trim() && !body.admin_custom_key.includes('••')
-      ? body.admin_custom_key.trim() : '');
-  const apiKey = liveKey || await getSetting(oid, keyField) || await getSetting(oid, 'admin_custom_key');
+    : '';
+  const packed = {
+    groq: await getSetting(oid, 'admin_groq_key'),
+    gemini: await getSetting(oid, 'admin_gemini_key'),
+    openrouter: await getSetting(oid, 'admin_openrouter_key'),
+    cerebras: await getSetting(oid, 'admin_cerebras_key'),
+    custom: await getSetting(oid, 'admin_custom_key'),
+    openai: await getSetting(oid, 'admin_openai_key'),
+    anthropic: await getSetting(oid, 'admin_anthropic_key'),
+  };
+  if (liveKey) packed[provider] = liveKey;
+  const apiKey = (liveKey && (!guessKeyProvider(liveKey) || guessKeyProvider(liveKey) === provider || provider === 'custom'))
+    ? liveKey
+    : keyForProvider(provider, packed);
   const baseUrl = spec.baseUrl
     || (typeof body.admin_custom_base_url === 'string' ? body.admin_custom_base_url.trim() : '')
     || await getSetting(oid, 'admin_custom_base_url');
   let modelId = (body.model_id || '').trim();
+  if (provider === 'groq' && (!modelId || inferProvider(modelId, provider) !== 'groq')) {
+    modelId = 'llama-3.3-70b-versatile';
+  }
   if (!modelId) {
     modelId = (await db.prepare('SELECT model_id FROM ai_models WHERE provider=? AND active=1 ORDER BY position ASC LIMIT 1').get(provider))?.model_id
       || (await db.prepare('SELECT model_id FROM ai_models WHERE active=1 ORDER BY position ASC LIMIT 1').get())?.model_id
