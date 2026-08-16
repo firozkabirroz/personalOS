@@ -663,6 +663,24 @@ async function seedAndCleanup() {
       console.log('Seeded demo accounts: admin / demo');
     }
   }
+
+  const { inferProvider, guessKeyProvider } = require('./ai-providers');
+  const catalog = await db.prepare('SELECT id, provider, model_id FROM ai_models').all();
+  for (const row of catalog) {
+    const inferred = inferProvider(row.model_id, row.provider);
+    if (inferred !== row.provider && inferred !== 'custom') {
+      await db.prepare('UPDATE ai_models SET provider=? WHERE id=?').run(inferred, row.id);
+    }
+  }
+  const owner = await db.prepare("SELECT id FROM users WHERE role='owner' ORDER BY id ASC LIMIT 1").get();
+  if (owner) {
+    const groqKey = await getSetting(owner.id, 'admin_groq_key');
+    const customKey = await getSetting(owner.id, 'admin_custom_key');
+    const customUrl = await getSetting(owner.id, 'admin_custom_base_url');
+    if (!groqKey && customKey && (guessKeyProvider(customKey) === 'groq' || /groq/i.test(customUrl || ''))) {
+      await setSetting(owner.id, 'admin_groq_key', customKey);
+    }
+  }
 }
 
 async function init() {

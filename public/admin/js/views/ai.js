@@ -1,16 +1,20 @@
 import { get, post, put, del } from '/js/api.js';
 import { el, icon, icons, formModal, confirmModal, toast } from '/js/ui.js';
 
-const PROVIDER_LABEL = { anthropic: 'Anthropic', openai: 'OpenAI', custom: 'Custom / Free API' };
+const PROVIDER_LABEL = {
+  anthropic: 'Anthropic', openai: 'OpenAI', custom: 'Custom',
+  groq: 'Groq', gemini: 'Gemini', openrouter: 'OpenRouter', cerebras: 'Cerebras',
+};
 
 const FREE_PRESETS = [
   {
     id: 'groq',
     name: 'Groq',
-    blurb: 'সবচেয়ে দ্রুত · কার্ড লাগে না · ফ্রি টিয়ার',
+    blurb: 'সবচেয়ে দ্রুত · কার্ড লাগে না · Llama 3.3 এখানে',
     signup: 'https://console.groq.com/keys',
     signupLabel: 'console.groq.com → API Keys',
-    baseUrl: 'https://api.groq.com/openai/v1',
+    keyField: 'admin_groq_key',
+    keyPlaceholder: 'gsk_...',
     models: [
       { name: 'Llama 3.3 70B (Groq)', model_id: 'llama-3.3-70b-versatile' },
       { name: 'Llama 3.1 8B Instant (Groq)', model_id: 'llama-3.1-8b-instant' },
@@ -23,7 +27,8 @@ const FREE_PRESETS = [
     blurb: 'ফ্রি টিয়ার বড় · লম্বা কনটেক্সট',
     signup: 'https://aistudio.google.com/apikey',
     signupLabel: 'aistudio.google.com → Get API key',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    keyField: 'admin_gemini_key',
+    keyPlaceholder: 'AIza...',
     models: [
       { name: 'Gemini 2.5 Flash', model_id: 'gemini-2.5-flash' },
       { name: 'Gemini 2.0 Flash', model_id: 'gemini-2.0-flash' },
@@ -36,7 +41,8 @@ const FREE_PRESETS = [
     blurb: '২০+ ফ্রি মডেল এক কি-তে',
     signup: 'https://openrouter.ai/keys',
     signupLabel: 'openrouter.ai → Keys',
-    baseUrl: 'https://openrouter.ai/api/v1',
+    keyField: 'admin_openrouter_key',
+    keyPlaceholder: 'sk-or-...',
     models: [
       { name: 'Llama 3.3 70B (OpenRouter free)', model_id: 'meta-llama/llama-3.3-70b-instruct:free' },
       { name: 'Gemma 3 27B (OpenRouter free)', model_id: 'google/gemma-3-27b-it:free' },
@@ -49,7 +55,8 @@ const FREE_PRESETS = [
     blurb: 'খুব দ্রুত Llama · ফ্রি টিয়ার',
     signup: 'https://cloud.cerebras.ai',
     signupLabel: 'cloud.cerebras.ai → API key',
-    baseUrl: 'https://api.cerebras.ai/v1',
+    keyField: 'admin_cerebras_key',
+    keyPlaceholder: 'csk-...',
     models: [
       { name: 'Llama 3.3 70B (Cerebras)', model_id: 'llama-3.3-70b' },
       { name: 'Llama 3.1 8B (Cerebras)', model_id: 'llama3.1-8b' },
@@ -102,23 +109,24 @@ export default async function aiModelsView() {
       return post('/admin/ai-test', body);
     };
 
-    const addIfMissing = async (presetModels) => {
+    const addIfMissing = async (preset) => {
       let added = 0;
-      for (const m of presetModels) {
+      for (const m of preset.models) {
         if (existingIds.has(m.model_id)) continue;
-        await post('/admin/ai-models', { name: m.name, provider: 'custom', model_id: m.model_id });
+        await post('/admin/ai-models', { name: m.name, provider: preset.id, model_id: m.model_id });
         existingIds.add(m.model_id);
         added++;
       }
       return added;
     };
 
-    const applyPreset = async (preset) => {
-      kCustomUrl.input.value = preset.baseUrl;
+    const applyPreset = async (preset, extraKey) => {
       try {
-        await post('/admin/ai-keys', { admin_custom_base_url: preset.baseUrl });
-        const added = await addIfMissing(preset.models);
-        toast(`${preset.name} URL saved` + (added ? ` · ${added} free model(s) added` : ' · models already in catalog'));
+        const body = {};
+        if (extraKey) body[preset.keyField] = extraKey;
+        if (Object.keys(body).length) await post('/admin/ai-keys', body);
+        const added = await addIfMissing(preset);
+        toast(`${preset.name}` + (extraKey ? ' key saved' : '') + (added ? ` · ${added} model(s) added` : ' · models ready'));
         render();
       } catch (e) {
         toast('Save failed: ' + e.message, 'err');
@@ -163,7 +171,11 @@ export default async function aiModelsView() {
     const modelFields = () => [
       { key: 'name', label: 'Display name', placeholder: 'e.g. Llama 3.3 70B' },
       { key: 'provider', label: 'Provider', type: 'select', options: [
-        { value: 'custom', label: 'Custom / Free API' },
+        { value: 'groq', label: 'Groq' },
+        { value: 'gemini', label: 'Google Gemini' },
+        { value: 'openrouter', label: 'OpenRouter' },
+        { value: 'cerebras', label: 'Cerebras' },
+        { value: 'custom', label: 'Custom URL' },
         { value: 'openai', label: 'OpenAI' },
         { value: 'anthropic', label: 'Anthropic' },
       ], default: 'custom' },
@@ -182,13 +194,29 @@ export default async function aiModelsView() {
       onSubmit: async (v) => { await put(`/admin/ai-models/${m.id}`, v); toast('Updated ✓'); render(); },
     });
 
-    const presetCards = FREE_PRESETS.map(p => el('div', { class: 'card', style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
-      el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' } },
-        el('b', {}, p.name), el('span', { class: 'badge green' }, 'Free')),
-      el('p', { class: 'muted', style: { margin: 0, fontSize: '13px' } }, p.blurb),
-      el('div', { class: 'muted', style: { fontFamily: 'monospace', fontSize: '11.5px', wordBreak: 'break-all' } }, p.baseUrl),
-      el('a', { href: p.signup, target: '_blank', rel: 'noopener', class: 'muted', style: { fontSize: '12.5px' } }, '↗ ' + p.signupLabel),
-      el('button', { class: 'btn sm', onclick: () => applyPreset(p) }, `Use ${p.name} + add models`)));
+    const presetCards = FREE_PRESETS.map(p => {
+      const keyIn = el('input', {
+        type: 'password',
+        placeholder: keys[p.keyField + '_set'] ? `Saved: ${keys[p.keyField]}` : p.keyPlaceholder,
+      });
+      return el('div', { class: 'card', style: { display: 'flex', flexDirection: 'column', gap: '8px' } },
+        el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' } },
+          el('b', {}, p.name),
+          el('span', { class: `badge ${keys[p.keyField + '_set'] ? 'green' : ''}` }, keys[p.keyField + '_set'] ? 'Key saved' : 'Free')),
+        el('p', { class: 'muted', style: { margin: 0, fontSize: '13px' } }, p.blurb),
+        el('a', { href: p.signup, target: '_blank', rel: 'noopener', class: 'muted', style: { fontSize: '12.5px' } }, '↗ ' + p.signupLabel),
+        el('div', { class: 'field', style: { margin: 0 } }, el('label', {}, p.name + ' API key'), keyIn),
+        el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          el('button', { class: 'btn sm', onclick: () => applyPreset(p, keyIn.value.trim()) }, keys[p.keyField + '_set'] && !keyIn.value.trim() ? `Add ${p.name} models` : `Save ${p.name} + add models`),
+          el('button', { class: 'btn ghost sm', onclick: async () => {
+            try {
+              if (keyIn.value.trim()) await post('/admin/ai-keys', { [p.keyField]: keyIn.value.trim() });
+              const result = await post('/admin/ai-test', { provider: p.id, [p.keyField]: keyIn.value.trim(), model_id: p.models[0].model_id });
+              toast('Connected ✓  ' + (result.reply || p.name));
+              render();
+            } catch (e) { toast('Test failed: ' + e.message, 'err'); }
+          } }, 'Test')));
+    });
 
     const suggestionRows = FREE_PRESETS.flatMap(p => p.models.map(m => {
       const already = existingIds.has(m.model_id);
@@ -199,10 +227,8 @@ export default async function aiModelsView() {
         already
           ? el('span', { class: 'badge green' }, 'Added')
           : el('button', { class: 'btn ghost sm', onclick: async () => {
-              kCustomUrl.input.value = p.baseUrl;
-              await post('/admin/ai-keys', { admin_custom_base_url: p.baseUrl });
-              await post('/admin/ai-models', { name: m.name, provider: 'custom', model_id: m.model_id });
-              toast(`${m.name} added · ${p.name} URL set`);
+              await post('/admin/ai-models', { name: m.name, provider: p.id, model_id: m.model_id });
+              toast(`${m.name} added`);
               render();
             } }, 'Add'));
     }));
@@ -211,7 +237,7 @@ export default async function aiModelsView() {
       el('div', { class: 'card', style: { marginBottom: '16px', borderColor: 'var(--accent)' } },
         el('h3', {}, icon('ai'), 'Custom / Free API'),
         el('p', { class: 'muted', style: { marginTop: '-8px', marginBottom: '14px' } },
-          'OpenAI-compatible যেকোনো ফ্রি API এখানে লাগান — Groq, Gemini, OpenRouter, Cerebras, বা নিজের endpoint। নিচের প্রিসেটে ক্লিক করলে URL ও মডেল অটো সেট হবে; তারপর ওই সাইট থেকে ফ্রি API key পেস্ট করুন।'),
+          'Groq card-এ gsk_ key সেভ করুন — Llama 3.3 সেটাই ব্যবহার করবে। Gemini আলাদা key। Custom URL শুধু অন্য endpoint-এর জন্য।'),
         el('div', { class: 'field-row' }, kCustomUrl.el, kCustom.el),
         el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } }, saveCustomBtn, testCustomBtn),
         customStatus,

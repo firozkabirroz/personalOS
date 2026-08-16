@@ -5,6 +5,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { db, getSetting, DATA_DIR } = require('./db');
 const { ownerId } = require('./platform');
+const { PROVIDERS, inferProvider, guessKeyProvider, chatCompletionsUrl } = require('./ai-providers');
 
 const router = express.Router();
 
@@ -132,41 +133,60 @@ function isLocalAiUrl(url) {
 }
 
 async function loadPlatformAI(oid) {
-  if (!oid) return { openai: '', anthropic: '', custom: '', customUrl: '' };
-  const [openai, anthropic, custom, customUrl] = await Promise.all([
-    getSetting(oid, 'admin_openai_key'),
-    getSetting(oid, 'admin_anthropic_key'),
-    getSetting(oid, 'admin_custom_key'),
-    getSetting(oid, 'admin_custom_base_url'),
-  ]);
-  return {
-    openai: normalizeKey(openai),
-    anthropic: normalizeKey(anthropic),
-    custom: normalizeKey(custom),
-    customUrl: String(customUrl || '').trim(),
+  if (!oid) {
+    return { openai: '', anthropic: '', groq: '', gemini: '', openrouter: '', cerebras: '', custom: '', customUrl: '' };
+  }
+  const fields = {
+    openai: 'admin_openai_key',
+    anthropic: 'admin_anthropic_key',
+    groq: 'admin_groq_key',
+    gemini: 'admin_gemini_key',
+    openrouter: 'admin_openrouter_key',
+    cerebras: 'admin_cerebras_key',
+    custom: 'admin_custom_key',
   };
+  const out = { customUrl: String(await getSetting(oid, 'admin_custom_base_url') || '').trim() };
+  await Promise.all(Object.entries(fields).map(async ([name, field]) => {
+    out[name] = normalizeKey(await getSetting(oid, field));
+  }));
+  return out;
+}
+
+function hostOf(url) {
+  try { return new URL(url).hostname; } catch { return ''; }
 }
 
 function credsFor(model, keys) {
-  if (!model) return { apiKey: '', baseUrl: '' };
-  if (model.provider === 'custom') return { apiKey: keys.custom, baseUrl: keys.customUrl };
-  if (model.provider === 'openai') return { apiKey: keys.openai, baseUrl: '' };
-  if (model.provider === 'anthropic') return { apiKey: keys.anthropic, baseUrl: '' };
-  return { apiKey: '', baseUrl: '' };
+  if (!model) return { provider: 'custom', apiKey: '', baseUrl: '' };
+  const provider = inferProvider(model.model_id, model.provider);
+  const spec = PROVIDERS[provider] || PROVIDERS.custom;
+  if (provider === 'anthropic') return { provider, apiKey: keys.anthropic, baseUrl: '' };
+  if (provider === 'openai') return { provider, apiKey: keys.openai, baseUrl: spec.baseUrl };
+  if (provider === 'custom') return { provider, apiKey: keys.custom, baseUrl: keys.customUrl };
+
+  let apiKey = keys[provider] || '';
+  if (!apiKey && guessKeyProvider(keys.custom) === provider) apiKey = keys.custom;
+  if (!apiKey && keys.custom && spec.baseUrl && hostOf(keys.customUrl) && hostOf(keys.customUrl) === hostOf(spec.baseUrl)) {
+    apiKey = keys.custom;
+  }
+  return { provider, apiKey, baseUrl: spec.baseUrl };
 }
 
 function modelReady(model, keys) {
-  const { apiKey, baseUrl } = credsFor(model, keys);
-  if (model.provider === 'custom') return !!(baseUrl && (apiKey || isLocalAiUrl(baseUrl)));
-  return !!apiKey;
+  const { provider, apiKey, baseUrl } = credsFor(model, keys);
+  if (provider === 'custom') return !!(baseUrl && (apiKey || isLocalAiUrl(baseUrl)));
+  if (provider === 'anthropic' || provider === 'openai') return !!apiKey;
+  return !!(apiKey && baseUrl);
 }
 
 async function listActiveModels() {
   const rows = await db.prepare(`SELECT id, name, provider, model_id, position FROM ai_models
-    WHERE active=1 ORDER BY CASE provider WHEN 'custom' THEN 0 ELSE 1 END, position ASC, id ASC`).all();
+    WHERE active=1 ORDER BY CASE provider
+      WHEN 'groq' THEN 0 WHEN 'gemini' THEN 1 WHEN 'openrouter' THEN 2 WHEN 'cerebras' THEN 3
+      WHEN 'custom' THEN 4 ELSE 5 END, position ASC, id ASC`).all();
   const keys = await loadPlatformAI(await ownerId());
   const ready = rows.filter((m) => modelReady(m, keys));
-  return ready.length ? ready : rows.filter((m) => m.provider === 'custom');
+  return ready.length ? ready : rows.filter((m) => ['groq', 'gemini', 'openrouter', 'cerebras', 'custom'].includes(inferProvider(m.model_id, m.provider)));
 }
 
 async function resolveModel(modelDbId, keys) {
@@ -175,8 +195,10 @@ async function resolveModel(modelDbId, keys) {
     if (m && modelReady(m, keys)) return m;
   }
   const rows = await db.prepare(`SELECT * FROM ai_models WHERE active=1
-    ORDER BY CASE provider WHEN 'custom' THEN 0 ELSE 1 END, position ASC, id ASC`).all();
-  return rows.find((m) => modelReady(m, keys)) || rows.find((m) => m.provider === 'custom') || rows[0] || null;
+    ORDER BY CASE provider
+      WHEN 'groq' THEN 0 WHEN 'gemini' THEN 1 WHEN 'openrouter' THEN 2 WHEN 'cerebras' THEN 3
+      WHEN 'custom' THEN 4 ELSE 5 END, position ASC, id ASC`).all();
+  return rows.find((m) => modelReady(m, keys)) || rows[0] || null;
 }
 
 /** Resolve platform key + model for a chat — everything is free for everyone. */
@@ -186,24 +208,22 @@ async function resolveAIRoute(modelDbId) {
   const model = await resolveModel(modelDbId, keys);
   if (!model) return { error: 'No AI model is available. Ask the admin to add one in Admin → AI Models.' };
 
-  const { apiKey, baseUrl } = credsFor(model, keys);
-
+  const creds = credsFor(model, keys);
   if (!modelReady(model, keys)) {
-    if (keys.customUrl && keys.custom) {
-      const fallback = await db.prepare(`SELECT * FROM ai_models WHERE active=1 AND provider='custom'
-        ORDER BY position ASC, id ASC LIMIT 1`).get();
-      if (fallback) {
-        return { provider: 'custom', apiKey: keys.custom, model: fallback.model_id, baseUrl: keys.customUrl, modelRow: fallback };
-      }
+    const fallback = (await db.prepare('SELECT * FROM ai_models WHERE active=1').all())
+      .find((m) => modelReady(m, keys));
+    if (fallback) {
+      const fb = credsFor(fallback, keys);
+      return { provider: fb.provider, apiKey: fb.apiKey, model: fallback.model_id, baseUrl: fb.baseUrl, modelRow: fallback };
     }
-    return { error: 'এই মডেলের API key সেট নেই। Admin → AI Models-এ Groq/Gemini key সেভ করুন, অথবা একটি Custom মডেল সিলেক্ট করুন।' };
+    return { error: `${creds.provider} API key missing. Admin → AI Models-এ ${PROVIDERS[creds.provider]?.label || creds.provider} key সেভ করুন।` };
   }
 
   return {
-    provider: model.provider,
-    apiKey: apiKey || (isLocalAiUrl(baseUrl) ? 'not-needed' : ''),
+    provider: creds.provider,
+    apiKey: creds.apiKey || (isLocalAiUrl(creds.baseUrl) ? 'not-needed' : ''),
     model: model.model_id,
-    baseUrl,
+    baseUrl: creds.baseUrl,
     modelRow: model,
   };
 }
@@ -273,13 +293,6 @@ async function callAnthropic({ apiKey, model, system, messages, userContent }) {
   const data = await resp.json();
   if (!resp.ok) throw new Error(data?.error?.message || `Anthropic API error (${resp.status})`);
   return (data.content || []).map(b => b.text || '').join('');
-}
-
-function chatCompletionsUrl(baseUrl) {
-  const raw = (baseUrl || 'https://api.openai.com').replace(/\/+$/, '');
-  if (/\/chat\/completions$/i.test(raw)) return raw;
-  if (/\/v1$/i.test(raw) || /\/openai$/i.test(raw)) return raw + '/chat/completions';
-  return raw + '/v1/chat/completions';
 }
 
 async function callOpenAI({ apiKey, model, baseUrl, system, messages, userContent }) {
@@ -421,7 +434,7 @@ ${context || '(No data yet — the user has not added anything.)'}
     let reply;
     const contentArg = parts.length ? userContent : null;
     if (provider === 'anthropic') reply = await callAnthropic({ apiKey, model, system, messages, userContent: contentArg });
-    else reply = await callOpenAI({ apiKey, model, baseUrl: provider === 'custom' ? baseUrl : '', system, messages, userContent: contentArg });
+    else reply = await callOpenAI({ apiKey, model, baseUrl, system, messages, userContent: contentArg });
 
     const displayMsg = message || '(attachment)';
     await db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments, conversation_id) VALUES (?,?,?,?,?,?)')

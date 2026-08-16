@@ -6,12 +6,13 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { db, getSetting, setSetting } = require('./db');
 const { ownerId, mask, logActivity } = require('./platform');
+const { KEY_FIELDS, PROVIDER_IDS, PROVIDERS, inferProvider, chatCompletionsUrl } = require('./ai-providers');
 
 const STAFF_ROLES = ['owner', 'manager', 'support'];
 
 // AI provider keys used platform-wide (one key covers every model of that
 // provider in the ai_models catalog). Masked like a normal secret setting.
-const AI_KEY_FIELDS = ['admin_anthropic_key', 'admin_openai_key', 'admin_custom_key', 'admin_custom_base_url'];
+const AI_KEY_FIELDS = KEY_FIELDS;
 
 /** Everything is free — kept as a no-op for compatibility. */
 function subscriptionGate(req, res, next) {
@@ -151,30 +152,29 @@ router.post('/admin/ai-keys', requireAdmin, async (req, res) => {
   res.json({ ok: true, saved });
 });
 
-function chatCompletionsUrl(baseUrl) {
-  const raw = (baseUrl || 'https://api.openai.com').replace(/\/+$/, '');
-  if (/\/chat\/completions$/i.test(raw)) return raw;
-  if (/\/v1$/i.test(raw) || /\/openai$/i.test(raw)) return raw + '/chat/completions';
-  return raw + '/v1/chat/completions';
-}
-
 router.post('/admin/ai-test', requireAdmin, async (req, res) => {
   const oid = await ownerId();
   if (!oid) return res.status(500).json({ error: 'Owner account missing' });
   const body = req.body || {};
-  const liveKey = typeof body.admin_custom_key === 'string' && body.admin_custom_key.trim() && !body.admin_custom_key.includes('••')
-    ? body.admin_custom_key.trim() : '';
-  const liveUrl = typeof body.admin_custom_base_url === 'string' ? body.admin_custom_base_url.trim() : '';
-  const apiKey = liveKey || await getSetting(oid, 'admin_custom_key');
-  const baseUrl = liveUrl || await getSetting(oid, 'admin_custom_base_url');
+  const provider = PROVIDER_IDS.includes(body.provider) ? body.provider : inferProvider(body.model_id, 'custom');
+  const spec = PROVIDERS[provider] || PROVIDERS.custom;
+  const keyField = spec.keyField;
+  const liveKey = typeof body[keyField] === 'string' && body[keyField].trim() && !body[keyField].includes('••')
+    ? body[keyField].trim()
+    : (typeof body.admin_custom_key === 'string' && body.admin_custom_key.trim() && !body.admin_custom_key.includes('••')
+      ? body.admin_custom_key.trim() : '');
+  const apiKey = liveKey || await getSetting(oid, keyField) || await getSetting(oid, 'admin_custom_key');
+  const baseUrl = spec.baseUrl
+    || (typeof body.admin_custom_base_url === 'string' ? body.admin_custom_base_url.trim() : '')
+    || await getSetting(oid, 'admin_custom_base_url');
   let modelId = (body.model_id || '').trim();
   if (!modelId) {
-    modelId = (await db.prepare("SELECT model_id FROM ai_models WHERE provider='custom' AND active=1 ORDER BY position ASC LIMIT 1").get())?.model_id
+    modelId = (await db.prepare('SELECT model_id FROM ai_models WHERE provider=? AND active=1 ORDER BY position ASC LIMIT 1').get(provider))?.model_id
       || (await db.prepare('SELECT model_id FROM ai_models WHERE active=1 ORDER BY position ASC LIMIT 1').get())?.model_id
       || '';
   }
-  if (!baseUrl) return res.status(400).json({ error: 'Save a custom base URL first (or pick a free preset).' });
-  if (!apiKey) return res.status(400).json({ error: 'Save an API key first, then Test.' });
+  if (!baseUrl) return res.status(400).json({ error: 'Save a base URL first (or pick a free preset).' });
+  if (!apiKey) return res.status(400).json({ error: `Save a ${spec.label} API key first, then Test.` });
   if (!modelId) return res.status(400).json({ error: 'Add a model to the catalog first.' });
 
   const url = chatCompletionsUrl(baseUrl);
@@ -214,7 +214,7 @@ router.get('/admin/ai-models', requireAdmin, async (req, res) => {
 router.post('/admin/ai-models', requireAdmin, async (req, res) => {
   const { name, provider, model_id } = req.body || {};
   if (!name?.trim() || !model_id?.trim()) return res.status(400).json({ error: 'Name and model ID are required' });
-  if (!['anthropic', 'openai', 'custom'].includes(provider)) return res.status(400).json({ error: 'Invalid provider' });
+  if (!PROVIDER_IDS.includes(provider)) return res.status(400).json({ error: 'Invalid provider' });
   const maxPos = (await db.prepare('SELECT COALESCE(MAX(position),0) m FROM ai_models').get()).m;
   const info = await db.prepare(`INSERT INTO ai_models (name, provider, model_id, position)
     VALUES (?,?,?,?)`).run(name.trim(), provider, model_id.trim(), maxPos + 1);
