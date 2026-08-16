@@ -5,7 +5,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { db, getSetting, setSetting, DATA_DIR } = require('./db');
 const { ownerId } = require('./platform');
-const { PROVIDERS, inferProvider, keyForProvider, chatCompletionsUrl, formatProviderError } = require('./ai-providers');
+const { PROVIDERS, inferProvider, keyForProvider, chatCompletionsUrl, formatProviderError, sanitizeKey } = require('./ai-providers');
 
 const router = express.Router();
 
@@ -119,13 +119,7 @@ async function buildContext(uid) {
 }
 
 function normalizeKey(k) {
-  return String(k || '')
-    .replace(/^\uFEFF/, '')
-    .trim()
-    .replace(/^Bearer\s+/i, '')
-    .replace(/^["']|["']$/g, '')
-    .replace(/[\r\n\t]/g, '')
-    .trim();
+  return sanitizeKey(k);
 }
 
 function isLocalAiUrl(url) {

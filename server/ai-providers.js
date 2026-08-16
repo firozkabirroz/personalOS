@@ -93,8 +93,18 @@ function looksLikeUrl(key) {
   return /^https?:\/\//i.test(String(key || '').trim());
 }
 
+function sanitizeKey(key) {
+  return String(key || '')
+    .replace(/^\uFEFF/, '')
+    .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '')
+    .replace(/^Bearer\s+/i, '')
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/\s+/g, '')
+    .trim();
+}
+
 function guessKeyProvider(key) {
-  const k = String(key || '').trim();
+  const k = sanitizeKey(key);
   if (looksLikeUrl(k)) return '';
   if (k.startsWith('gsk_')) return 'groq';
   if (k.startsWith('AIza') || k.startsWith('AQ.')) return 'gemini';
@@ -106,13 +116,18 @@ function guessKeyProvider(key) {
 }
 
 function describeKey(key) {
-  const s = String(key || '').trim();
+  const s = sanitizeKey(key);
   if (!s) return 'no key';
   if (looksLikeUrl(s)) return 'a URL (base URL is not an API key)';
   const p = guessKeyProvider(s);
-  if (p === 'groq') return 'a Groq gsk_ key that Groq rejected (revoked or typed wrong)';
+  if (p === 'groq') {
+    if (s.length < 40) {
+      return `an incomplete Groq key (${s.length} chars — full gsk_ keys are ~56 characters; copy it once from console.groq.com/keys)`;
+    }
+    return `a Groq gsk_ key (${s.length} chars) that Groq rejected — the key is revoked or not copied fully. Create a NEW key and paste the whole value into the Groq card`;
+  }
   if (p) return `a ${PROVIDERS[p]?.label || p} key, not Groq`;
-  return `key starting with "${s.slice(0, 6)}…"`;
+  return `key starting with "${s.slice(0, 6)}…" (${s.length} chars)`;
 }
 
 function formatProviderError(status, raw, { host, model, apiKey } = {}) {
@@ -135,7 +150,7 @@ function formatProviderError(status, raw, { host, model, apiKey } = {}) {
 
 function keySlots(keys) {
   return [keys.groq, keys.custom, keys.openai, keys.gemini, keys.openrouter, keys.cerebras, keys.anthropic]
-    .map((k) => String(k || '').trim())
+    .map((k) => sanitizeKey(k))
     .filter((k) => k && !looksLikeUrl(k));
 }
 
@@ -143,16 +158,43 @@ function keySlots(keys) {
 function keyForProvider(provider, keys) {
   const prefixed = keySlots(keys).find((k) => guessKeyProvider(k) === provider);
   if (prefixed) return prefixed;
-  const slot = String(keys[provider] || '').trim();
+  const slot = sanitizeKey(keys[provider] || '');
   if (!slot || looksLikeUrl(slot)) return '';
   const guessed = guessKeyProvider(slot);
   if (!guessed || guessed === provider) return slot;
   return '';
 }
 
+function assertUsableKey(key, provider) {
+  const cleaned = sanitizeKey(key);
+  if (!cleaned) {
+    const err = new Error('Paste an API key first');
+    err.status = 400;
+    throw err;
+  }
+  if (looksLikeUrl(cleaned)) {
+    const err = new Error('That is a base URL, not an API key. Groq keys start with gsk_');
+    err.status = 400;
+    throw err;
+  }
+  if (provider === 'groq' || guessKeyProvider(cleaned) === 'groq') {
+    if (!cleaned.startsWith('gsk_')) {
+      const err = new Error('Groq keys start with gsk_. Create one at https://console.groq.com/keys');
+      err.status = 400;
+      throw err;
+    }
+    if (cleaned.length < 40) {
+      const err = new Error(`That Groq key looks incomplete (${cleaned.length} characters). Copy the full key — Groq shows it only once.`);
+      err.status = 400;
+      throw err;
+    }
+  }
+  return cleaned;
+}
+
 module.exports = {
   PROVIDERS, KEY_FIELDS, PROVIDER_IDS,
   GROQ_MODEL_MIGRATIONS, GROQ_DEFAULT_MODEL,
   inferProvider, chatCompletionsUrl, guessKeyProvider, keyForProvider,
-  looksLikeUrl, describeKey, formatProviderError,
+  looksLikeUrl, describeKey, formatProviderError, sanitizeKey, assertUsableKey,
 };

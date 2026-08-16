@@ -7,7 +7,7 @@ const bcrypt = require('bcryptjs');
 const { db, getSetting, setSetting } = require('./db');
 const { ownerId, mask, logActivity } = require('./platform');
 const { setUserCredentials, defaultLoginRisks } = require('./credentials');
-const { KEY_FIELDS, PROVIDER_IDS, PROVIDERS, inferProvider, chatCompletionsUrl, guessKeyProvider, keyForProvider, looksLikeUrl, formatProviderError, GROQ_DEFAULT_MODEL, GROQ_MODEL_MIGRATIONS } = require('./ai-providers');
+const { KEY_FIELDS, PROVIDER_IDS, PROVIDERS, inferProvider, chatCompletionsUrl, guessKeyProvider, keyForProvider, looksLikeUrl, formatProviderError, GROQ_DEFAULT_MODEL, GROQ_MODEL_MIGRATIONS, sanitizeKey, assertUsableKey } = require('./ai-providers');
 
 const STAFF_ROLES = ['owner', 'manager', 'support'];
 
@@ -164,7 +164,14 @@ router.post('/admin/ai-keys', requireAdmin, async (req, res) => {
     for (const key of AI_KEY_FIELDS) {
       const val = req.body?.[key];
       if (typeof val === 'string' && val.trim() && !val.includes('••')) {
-        const trimmed = val.trim();
+        let trimmed = val.trim();
+        if (!key.endsWith('_base_url')) {
+          try {
+            trimmed = assertUsableKey(trimmed, key === 'admin_groq_key' ? 'groq' : '');
+          } catch (e) {
+            return res.status(e.status || 400).json({ error: e.message });
+          }
+        }
         if (!key.endsWith('_base_url') && looksLikeUrl(trimmed)) {
           return res.status(400).json({ error: 'That is a base URL, not an API key. Groq key must start with gsk_ (console.groq.com/keys).' });
         }
@@ -196,27 +203,35 @@ router.post('/admin/ai-test', requireAdmin, async (req, res) => {
   const spec = PROVIDERS[provider] || PROVIDERS.custom;
   const keyField = spec.keyField;
   const liveKey = typeof body[keyField] === 'string' && body[keyField].trim() && !body[keyField].includes('••')
-    ? body[keyField].trim()
+    ? sanitizeKey(body[keyField])
     : '';
   if (liveKey && looksLikeUrl(liveKey)) {
     return res.status(400).json({ error: 'That is a base URL, not an API key. Paste a gsk_ key from https://console.groq.com/keys into the Groq card.' });
   }
+  if (liveKey && (provider === 'groq' || guessKeyProvider(liveKey) === 'groq')) {
+    try { assertUsableKey(liveKey, 'groq'); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+  }
   const packed = {
-    groq: await getSetting(oid, 'admin_groq_key'),
-    gemini: await getSetting(oid, 'admin_gemini_key'),
-    openrouter: await getSetting(oid, 'admin_openrouter_key'),
-    cerebras: await getSetting(oid, 'admin_cerebras_key'),
-    custom: await getSetting(oid, 'admin_custom_key'),
-    openai: await getSetting(oid, 'admin_openai_key'),
-    anthropic: await getSetting(oid, 'admin_anthropic_key'),
+    groq: sanitizeKey(await getSetting(oid, 'admin_groq_key')),
+    gemini: sanitizeKey(await getSetting(oid, 'admin_gemini_key')),
+    openrouter: sanitizeKey(await getSetting(oid, 'admin_openrouter_key')),
+    cerebras: sanitizeKey(await getSetting(oid, 'admin_cerebras_key')),
+    custom: sanitizeKey(await getSetting(oid, 'admin_custom_key')),
+    openai: sanitizeKey(await getSetting(oid, 'admin_openai_key')),
+    anthropic: sanitizeKey(await getSetting(oid, 'admin_anthropic_key')),
   };
   if (typeof body.admin_custom_key === 'string' && body.admin_custom_key.trim() && !body.admin_custom_key.includes('••')) {
-    packed.custom = body.admin_custom_key.trim();
+    packed.custom = sanitizeKey(body.admin_custom_key);
   }
   if (liveKey) packed[provider] = liveKey;
   const apiKey = (liveKey && (!guessKeyProvider(liveKey) || guessKeyProvider(liveKey) === provider || provider === 'custom'))
     ? liveKey
     : keyForProvider(provider, packed);
+  if (provider === 'groq' && apiKey) {
+    try { assertUsableKey(apiKey, 'groq'); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
+  }
   const baseUrl = spec.baseUrl
     || (typeof body.admin_custom_base_url === 'string' ? body.admin_custom_base_url.trim() : '')
     || await getSetting(oid, 'admin_custom_base_url');

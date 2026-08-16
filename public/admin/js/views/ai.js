@@ -10,7 +10,7 @@ const FREE_PRESETS = [
   {
     id: 'groq',
     name: 'Groq',
-    blurb: 'সবচেয়ে দ্রুত · কার্ড লাগে না · Llama 3.3 আজ বন্ধ, এখন GPT-OSS',
+    blurb: 'সবচেয়ে দ্রুত · কার্ড লাগে না · নতুন gsk_ কি পুরো কপি করুন (একবারই দেখায়)',
     signup: 'https://console.groq.com/keys',
     signupLabel: 'console.groq.com → API Keys',
     keyField: 'admin_groq_key',
