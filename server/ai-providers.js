@@ -145,6 +145,12 @@ function formatProviderError(status, raw, { host, model, apiKey } = {}) {
       : '';
     return `Invalid API Key (${host || '?'} / ${model || '?'}). Sent ${describeKey(apiKey)}.${groqHint}`;
   }
+  if (status === 429 || /rate[_ ]limit/i.test(msg)) {
+    return 'The AI provider is rate-limited. Wait a few seconds, or split the task into smaller messages.';
+  }
+  if (status === 413 || /too large|context_length|maximum context|reduce the length|prompt is too long/i.test(msg)) {
+    return 'This task is too long for one request. Start a new chat or split it into smaller parts.';
+  }
   return msg || `API error (${status})`;
 }
 

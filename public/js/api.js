@@ -20,7 +20,10 @@ export async function api(path, options = {}) {
     throw new Error('Session expired');
   }
   if (!resp.ok) {
-    const err = new Error(data?.error || `Request failed (${resp.status})`);
+    const fallback = (resp.status === 504 || resp.status === 502 || resp.status === 408)
+      ? 'The AI timed out on a large task. Split it into smaller steps (outline first, then each section) and try again.'
+      : `Request failed (${resp.status})`;
+    const err = new Error(data?.error || fallback);
     throw err;
   }
   return data;

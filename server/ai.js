@@ -115,7 +115,7 @@ async function buildContext(uid) {
     for (const e of events) lines.push(`- ${e.date}${e.start_time ? ' ' + e.start_time : ''}: ${e.title}`);
   }
 
-  return lines.join('\n');
+  return lines.join('\n').slice(0, 14000);
 }
 
 function normalizeKey(k) {
@@ -286,9 +286,16 @@ async function callAnthropic({ apiKey, model, system, messages, userContent }) {
 
 async function callOpenAI({ apiKey, model, baseUrl, system, messages, userContent }) {
   const url = chatCompletionsUrl(baseUrl);
-  const formatted = messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : m.content }));
+  const clip = (text, n) => {
+    const s = String(text || '');
+    return s.length <= n ? s : s.slice(0, n) + '\n…[truncated]';
+  };
+  const formatted = messages.map((m) => ({
+    role: m.role,
+    content: typeof m.content === 'string' ? clip(m.content, 4000) : m.content,
+  }));
   if (userContent && typeof userContent === 'object') {
-    const content = [{ type: 'text', text: userContent.text || '' }];
+    const content = [{ type: 'text', text: clip(userContent.text || '', 20000) }];
     for (const b of userContent.blocks || []) {
       if (b.kind === 'image') {
         content.push({ type: 'image_url', image_url: { url: `data:${b.mediaType};base64,${b.data}` } });
@@ -296,20 +303,106 @@ async function callOpenAI({ apiKey, model, baseUrl, system, messages, userConten
     }
     formatted[formatted.length - 1] = { role: 'user', content };
   }
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: model || 'gpt-4o-mini', messages: [{ role: 'system', content: system }, ...formatted] }),
-  });
+
+  const id = String(model || '').toLowerCase();
+  const groqReasoning = id.includes('gpt-oss') || id.includes('qwen3.6') || id.startsWith('groq/');
+  const body = {
+    model: model || 'gpt-4o-mini',
+    messages: [{ role: 'system', content: clip(system, 14000) }, ...formatted.slice(-10)],
+  };
+  if (groqReasoning) {
+    body.max_completion_tokens = 4096;
+    body.reasoning_effort = 'low';
+  } else {
+    body.max_tokens = 4096;
+  }
+
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 50000);
+  let resp;
+  try {
+    resp = await fetch(url, {
+      method: 'POST',
+      signal: ac.signal,
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') {
+      throw new Error('This task is too large to finish in one go. Split it: ask for an outline first, then each section in a new message.');
+    }
+    throw new Error('Could not reach the AI provider. Try again in a moment.');
+  } finally {
+    clearTimeout(timer);
+  }
+
   let data = {};
   try { data = await resp.json(); } catch {}
+  if (!resp.ok) {
+    const raw = data?.error?.message || data?.error || `API error (${resp.status})`;
+    const paramErr = resp.status === 400 && /unknown|unsupported|unexpected|invalid.*param|max_tokens|reasoning/i.test(String(raw));
+    if (paramErr && (body.reasoning_effort || body.max_completion_tokens)) {
+      delete body.reasoning_effort;
+      delete body.max_completion_tokens;
+      body.max_tokens = 4096;
+      const ac2 = new AbortController();
+      const t2 = setTimeout(() => ac2.abort(), 50000);
+      try {
+        resp = await fetch(url, {
+          method: 'POST',
+          signal: ac2.signal,
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify(body),
+        });
+        data = await resp.json().catch(() => ({}));
+      } catch (e) {
+        if (e.name === 'AbortError') {
+          throw new Error('This task is too large to finish in one go. Split it: ask for an outline first, then each section in a new message.');
+        }
+        throw e;
+      } finally {
+        clearTimeout(t2);
+      }
+    }
+  }
+  if (!resp.ok) {
+    const rawCtx = data?.error?.message || data?.error || '';
+    const contextErr = /too large|context_length|maximum context|reduce the length|prompt is too long/i.test(String(rawCtx));
+    if (contextErr && formatted.length > 3) {
+      body.messages = [
+        { role: 'system', content: clip(system, 4000) },
+        ...formatted.slice(-3),
+      ];
+      const ac3 = new AbortController();
+      const t3 = setTimeout(() => ac3.abort(), 50000);
+      try {
+        resp = await fetch(url, {
+          method: 'POST',
+          signal: ac3.signal,
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify(body),
+        });
+        data = await resp.json().catch(() => ({}));
+      } catch (e) {
+        if (e.name === 'AbortError') {
+          throw new Error('This task is too large to finish in one go. Split it: ask for an outline first, then each section in a new message.');
+        }
+        throw e;
+      } finally {
+        clearTimeout(t3);
+      }
+    }
+  }
   if (!resp.ok) {
     const raw = data?.error?.message || data?.error || `API error (${resp.status})`;
     let host = url;
     try { host = new URL(url).hostname; } catch {}
     throw new Error(formatProviderError(resp.status, raw, { host, model, apiKey }));
   }
-  return data.choices?.[0]?.message?.content || '';
+  const msg = data.choices?.[0]?.message || {};
+  const text = String(msg.content || '').trim();
+  if (text) return text;
+  throw new Error('The model spent its whole reply thinking. Ask for a shorter piece, or say “outline first”.');
 }
 
 router.get('/ai/models', async (req, res) => {
@@ -406,12 +499,13 @@ router.post('/ai/chat', (req, res, next) => {
   const system = `You are the personal AI assistant inside "${user?.name || user?.username}"'s Personal OS dashboard.
 Today's date is ${new Date().toISOString().slice(0, 10)}.
 You have read access to their live data below. Use it to give specific, practical, personalised answers — reference their actual tasks, projects, expenses, habits, health and trips by name when relevant. Be concise and actionable. If data is missing for a question, say so and suggest what to track.
+If the user asks for a very large deliverable (full app, long document, many files), do not dump everything in one reply. Give a short plan, complete the first part thoroughly, and invite them to say "continue".
 
 === USER DATA SNAPSHOT ===
 ${context || '(No data yet — the user has not added anything.)'}
 === END DATA ===`;
 
-  const history = (await db.prepare('SELECT role, content FROM chats WHERE user_id=? AND conversation_id=? ORDER BY id DESC LIMIT 20').all(uid, conv.id)).reverse();
+  const history = (await db.prepare('SELECT role, content FROM chats WHERE user_id=? AND conversation_id=? ORDER BY id DESC LIMIT 10').all(uid, conv.id)).reverse();
   const messages = [
     ...history.map(h => ({ role: h.role, content: h.content })),
     { role: 'user', content: typeof userContent === 'string' ? userContent : userContent.text },
@@ -442,7 +536,7 @@ ${context || '(No data yet — the user has not added anything.)'}
     for (const f of files) {
       try { fs.unlinkSync(f.path); } catch {}
     }
-    res.status(502).json({ error: e.message });
+    res.status(502).json({ error: e.message || 'The AI request failed. Try a shorter message.' });
   }
 });
 
