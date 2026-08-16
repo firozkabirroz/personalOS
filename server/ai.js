@@ -284,18 +284,87 @@ async function callAnthropic({ apiKey, model, system, messages, userContent }) {
   return (data.content || []).map(b => b.text || '').join('');
 }
 
+function clipText(text, n) {
+  const s = String(text || '');
+  return s.length <= n ? s : s.slice(0, n) + '\n…[truncated]';
+}
+
+function openaiChatBody({ model, system, formatted, groqReasoning, large }) {
+  const body = {
+    model: model || 'gpt-4o-mini',
+    stream: true,
+    messages: [{ role: 'system', content: clipText(system, large ? 2500 : 14000) }, ...formatted.slice(large ? -4 : -10)],
+  };
+  if (groqReasoning) {
+    body.max_completion_tokens = large ? 2048 : 3072;
+    body.reasoning_effort = 'low';
+  } else {
+    body.max_tokens = large ? 2048 : 3072;
+  }
+  return body;
+}
+
+async function readOpenAiStream(resp, { deadline }) {
+  if (!resp.body || typeof resp.body.getReader !== 'function') {
+    const data = await resp.json().catch(() => ({}));
+    const text = String(data.choices?.[0]?.message?.content || '').trim();
+    return { text, truncated: false };
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let text = '';
+  let truncated = false;
+  while (true) {
+    if (Date.now() > deadline) {
+      truncated = true;
+      try { await reader.cancel(); } catch {}
+      break;
+    }
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      const s = line.trim();
+      if (!s.startsWith('data:')) continue;
+      const payload = s.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      try {
+        const chunk = JSON.parse(payload);
+        const delta = chunk.choices?.[0]?.delta?.content;
+        if (delta) text += delta;
+      } catch { /* ignore malformed sse lines */ }
+    }
+  }
+  return { text: text.trim(), truncated };
+}
+
+async function openAiRequest(url, apiKey, body, deadline) {
+  const ms = Math.max(3000, deadline - Date.now());
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  try {
+    return await fetch(url, {
+      method: 'POST',
+      signal: ac.signal,
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(body),
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function callOpenAI({ apiKey, model, baseUrl, system, messages, userContent }) {
   const url = chatCompletionsUrl(baseUrl);
-  const clip = (text, n) => {
-    const s = String(text || '');
-    return s.length <= n ? s : s.slice(0, n) + '\n…[truncated]';
-  };
   const formatted = messages.map((m) => ({
     role: m.role,
-    content: typeof m.content === 'string' ? clip(m.content, 4000) : m.content,
+    content: typeof m.content === 'string' ? clipText(m.content, 4000) : m.content,
   }));
   if (userContent && typeof userContent === 'object') {
-    const content = [{ type: 'text', text: clip(userContent.text || '', 20000) }];
+    const content = [{ type: 'text', text: clipText(userContent.text || '', 20000) }];
     for (const b of userContent.blocks || []) {
       if (b.kind === 'image') {
         content.push({ type: 'image_url', image_url: { url: `data:${b.mediaType};base64,${b.data}` } });
@@ -304,105 +373,89 @@ async function callOpenAI({ apiKey, model, baseUrl, system, messages, userConten
     formatted[formatted.length - 1] = { role: 'user', content };
   }
 
+  const last = formatted[formatted.length - 1];
+  const lastLen = typeof last?.content === 'string' ? last.content.length
+    : Array.isArray(last?.content) ? last.content.reduce((n, p) => n + String(p.text || '').length, 0) : 0;
+  const large = lastLen > 1200 || String(system || '').length > 10000;
   const id = String(model || '').toLowerCase();
   const groqReasoning = id.includes('gpt-oss') || id.includes('qwen3.6') || id.startsWith('groq/');
-  const body = {
-    model: model || 'gpt-4o-mini',
-    messages: [{ role: 'system', content: clip(system, 14000) }, ...formatted.slice(-10)],
-  };
-  if (groqReasoning) {
-    body.max_completion_tokens = 4096;
-    body.reasoning_effort = 'low';
-  } else {
-    body.max_tokens = 4096;
-  }
+  const body = openaiChatBody({ model, system, formatted, groqReasoning, large });
+  const deadline = Date.now() + 52000;
 
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 50000);
   let resp;
   try {
-    resp = await fetch(url, {
-      method: 'POST',
-      signal: ac.signal,
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(body),
-    });
+    resp = await openAiRequest(url, apiKey, body, deadline);
   } catch (e) {
     if (e.name === 'AbortError') {
       throw new Error('This task is too large to finish in one go. Split it: ask for an outline first, then each section in a new message.');
     }
     throw new Error('Could not reach the AI provider. Try again in a moment.');
-  } finally {
-    clearTimeout(timer);
   }
 
-  let data = {};
-  try { data = await resp.json(); } catch {}
+  let lastRaw = '';
+  const readErr = async () => {
+    if (lastRaw) return lastRaw;
+    const data = await resp.json().catch(() => ({}));
+    lastRaw = String(data?.error?.message || data?.error || `API error (${resp.status})`);
+    return lastRaw;
+  };
+
   if (!resp.ok) {
-    const raw = data?.error?.message || data?.error || `API error (${resp.status})`;
-    const paramErr = resp.status === 400 && /unknown|unsupported|unexpected|invalid.*param|max_tokens|reasoning/i.test(String(raw));
-    if (paramErr && (body.reasoning_effort || body.max_completion_tokens)) {
+    const raw = await readErr();
+    const paramErr = resp.status === 400 && /unknown|unsupported|unexpected|invalid.*param|max_tokens|reasoning|stream/i.test(String(raw));
+    if (paramErr) {
       delete body.reasoning_effort;
       delete body.max_completion_tokens;
-      body.max_tokens = 4096;
-      const ac2 = new AbortController();
-      const t2 = setTimeout(() => ac2.abort(), 50000);
+      delete body.stream;
+      body.max_tokens = large ? 2048 : 3072;
       try {
-        resp = await fetch(url, {
-          method: 'POST',
-          signal: ac2.signal,
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify(body),
-        });
-        data = await resp.json().catch(() => ({}));
+        resp = await openAiRequest(url, apiKey, body, deadline);
+        lastRaw = '';
       } catch (e) {
         if (e.name === 'AbortError') {
           throw new Error('This task is too large to finish in one go. Split it: ask for an outline first, then each section in a new message.');
         }
         throw e;
-      } finally {
-        clearTimeout(t2);
       }
     }
   }
+
   if (!resp.ok) {
-    const rawCtx = data?.error?.message || data?.error || '';
-    const contextErr = /too large|context_length|maximum context|reduce the length|prompt is too long/i.test(String(rawCtx));
-    if (contextErr && formatted.length > 3) {
-      body.messages = [
-        { role: 'system', content: clip(system, 4000) },
-        ...formatted.slice(-3),
-      ];
-      const ac3 = new AbortController();
-      const t3 = setTimeout(() => ac3.abort(), 50000);
+    const raw = await readErr();
+    if (/too large|context_length|maximum context|reduce the length|prompt is too long/i.test(String(raw)) && formatted.length > 3) {
+      body.messages = [{ role: 'system', content: clipText(system, 2000) }, ...formatted.slice(-2)];
       try {
-        resp = await fetch(url, {
-          method: 'POST',
-          signal: ac3.signal,
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify(body),
-        });
-        data = await resp.json().catch(() => ({}));
+        resp = await openAiRequest(url, apiKey, body, deadline);
+        lastRaw = '';
       } catch (e) {
         if (e.name === 'AbortError') {
           throw new Error('This task is too large to finish in one go. Split it: ask for an outline first, then each section in a new message.');
         }
         throw e;
-      } finally {
-        clearTimeout(t3);
       }
     }
   }
+
   if (!resp.ok) {
-    const raw = data?.error?.message || data?.error || `API error (${resp.status})`;
+    const raw = await readErr();
     let host = url;
     try { host = new URL(url).hostname; } catch {}
     throw new Error(formatProviderError(resp.status, raw, { host, model, apiKey }));
   }
-  const msg = data.choices?.[0]?.message || {};
-  const text = String(msg.content || '').trim();
+
+  if (!body.stream) {
+    const data = await resp.json().catch(() => ({}));
+    const text = String(data.choices?.[0]?.message?.content || '').trim();
+    if (text) return text;
+    throw new Error('The model spent its whole reply thinking. Ask for a shorter piece, or say “continue”.');
+  }
+
+  const { text, truncated } = await readOpenAiStream(resp, { deadline });
+  if (text && truncated) {
+    return `${text}\n\n— Time limit reached. Send **continue** for the next part.`;
+  }
   if (text) return text;
-  throw new Error('The model spent its whole reply thinking. Ask for a shorter piece, or say “outline first”.');
+  throw new Error('The model spent its whole reply thinking. Ask for a shorter piece, or say “continue”.');
 }
 
 router.get('/ai/models', async (req, res) => {
@@ -495,11 +548,15 @@ router.post('/ai/chat', (req, res, next) => {
   const userContent = buildUserContent(message || '(see attached files)', parts);
   const attachmentMeta = JSON.stringify(files.map(f => ({ name: f.originalname, mime: f.mimetype, size: f.size, stored: f.filename })));
 
-  const context = await buildContext(uid);
-  const system = `You are the personal AI assistant inside "${user?.name || user?.username}"'s Personal OS dashboard.
+  const largeTask = (message || '').length > 1200;
+  const context = largeTask ? '' : await buildContext(uid);
+  const system = largeTask
+    ? `You are a personal AI assistant. Today's date is ${new Date().toISOString().slice(0, 10)}.
+The user asked for a large task. Start with a short plan (max 6 bullets), then fully complete the first part. End with: "Send continue for the next part." Do not try to finish everything in one reply.`
+    : `You are the personal AI assistant inside "${user?.name || user?.username}"'s Personal OS dashboard.
 Today's date is ${new Date().toISOString().slice(0, 10)}.
 You have read access to their live data below. Use it to give specific, practical, personalised answers — reference their actual tasks, projects, expenses, habits, health and trips by name when relevant. Be concise and actionable. If data is missing for a question, say so and suggest what to track.
-If the user asks for a very large deliverable (full app, long document, many files), do not dump everything in one reply. Give a short plan, complete the first part thoroughly, and invite them to say "continue".
+If the user asks for a very large deliverable, complete the first part thoroughly and invite them to say "continue".
 
 === USER DATA SNAPSHOT ===
 ${context || '(No data yet — the user has not added anything.)'}

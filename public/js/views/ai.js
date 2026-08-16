@@ -223,9 +223,13 @@ export default async function aiView() {
       const r = await api('/ai/chat', { method: 'POST', body: fd });
       typing.remove();
       scroll.append(bubble('assistant', r.reply, { meta: r.model?.name || '' }));
-      // a fresh topic was just created server-side — adopt it and show it in the strip
       if (r.conversation && r.conversation.id !== activeConvId) {
         activeConvId = r.conversation.id;
+      }
+      const truncated = /send \*\*continue\*\*|send continue|time limit reached/i.test(r.reply || '');
+      if (truncated) {
+        scroll.append(el('div', { style: { display: 'flex', justifyContent: 'center', margin: '6px 0 10px' } },
+          el('button', { class: 'btn ghost sm', onclick: () => { input.value = 'continue'; send(); } }, 'Continue next part')));
       }
       refreshConvs();
     } catch (e) {
