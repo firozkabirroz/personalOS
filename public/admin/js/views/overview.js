@@ -4,7 +4,7 @@ import { navigate } from '../app.js';
 
 const TYPE_ICON = {
   registered: '🆕', google_login: '🔵', google_connected: '📅', notion_connected: '📓', telegram_connected: '📨',
-  ticket_created: '🎫', team_member_added: '👥',
+  ticket_created: '🎫', team_member_added: '👥', username_changed: '🔐', password_changed: '🔑',
 };
 
 export default async function overviewView() {
@@ -37,6 +37,19 @@ export default async function overviewView() {
         el('span', { style: { fontSize: '22px' } }, '🎫'),
         el('div', { class: 'grow' }, el('b', {}, `${o.openTickets} open support ticket(s)`)),
         el('button', { class: 'btn sm', onclick: () => navigate('support') }, 'Open inbox'))) : null,
+
+    (o.loginRisks || []).length ? el('div', { class: 'card', style: { marginBottom: '16px', borderColor: 'var(--red, #f87171)' } },
+      el('div', { style: { display: 'flex', alignItems: 'flex-start', gap: '12px', flexWrap: 'wrap' } },
+        el('span', { style: { fontSize: '22px' } }, '🔐'),
+        el('div', { class: 'grow' },
+          el('b', {}, 'Default demo login is still on this site'),
+          el('p', { class: 'muted', style: { margin: '6px 0 0' } },
+            o.loginRisks.map((r) => `@${r.username}` + (r.defaultPassword ? ' (default password)' : ' (guessable username)')).join(' · ')
+            + '. Change username and password, or delete the demo user.')),
+        el('button', { class: 'btn sm', onclick: () => navigate('account') }, 'Change login'),
+        o.loginRisks.some((r) => r.username === 'demo')
+          ? el('button', { class: 'btn ghost sm', onclick: () => navigate('users') }, 'Users')
+          : null)) : null,
 
     el('div', { class: 'grid cols-2', style: { marginBottom: '16px' } },
       el('div', { class: 'card' },

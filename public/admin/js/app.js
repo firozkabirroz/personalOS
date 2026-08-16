@@ -24,6 +24,9 @@ const NAV = [
   { group: 'Team', roles: ['owner'], items: [
     { route: 'team', label: 'Team', icon: 'shield', view: lazy(() => import('./views/team.js')) },
   ]},
+  { group: 'Account', items: [
+    { route: 'account', label: 'Login & security', icon: 'key', view: lazy(() => import('./views/account.js')) },
+  ]},
 ];
 
 const ROUTES = {};

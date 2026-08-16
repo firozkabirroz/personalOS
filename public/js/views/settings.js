@@ -1,5 +1,6 @@
 import { get, post, del } from '../api.js';
 import { el, icon, modal, toast } from '../ui.js';
+import { currentUser } from '../app.js';
 
 export default async function settingsView() {
   let s = await get('/settings');
@@ -113,15 +114,23 @@ export default async function settingsView() {
     toast('Saved ✓');
   } }, 'Save');
 
+  const curUser = el('input', { type: 'text', autocomplete: 'username' });
+  curUser.value = currentUser?.username || '';
   const curPass = el('input', { type: 'password', placeholder: 'Current password' });
-  const newPass = el('input', { type: 'password', placeholder: 'New password (min 6 chars)' });
+  const newPass = el('input', { type: 'password', placeholder: 'New password (min 6 chars, optional)' });
   const changePass = el('button', { class: 'btn ghost sm', onclick: async () => {
     try {
-      await post('/auth/change-password', { current: curPass.value, next: newPass.value });
-      toast('Password changed ✓');
+      const body = { current: curPass.value };
+      const nextUser = curUser.value.trim().toLowerCase();
+      if (nextUser && nextUser !== currentUser?.username) body.username = nextUser;
+      if (newPass.value) body.next = newPass.value;
+      if (!body.username && !body.next) throw new Error('Enter a new username or password');
+      const result = await post('/auth/account', body);
+      toast('Login updated ✓');
       curPass.value = newPass.value = '';
+      if (result?.user?.username && result.user.username !== currentUser?.username) location.reload();
     } catch (e) { toast(e.message, 'err'); }
-  } }, 'Change password');
+  } }, 'Save login');
 
   const section = (ic, title, desc, ...kids) => el('div', { class: 'card' },
     el('h3', {}, icon(ic), title),
@@ -156,8 +165,9 @@ export default async function settingsView() {
         el('div', { class: 'field' }, el('label', {}, 'Currency symbol'), currency),
         saveGeneral,
         el('div', { class: 'divider', style: { margin: '16px 0' } }),
-        el('div', { class: 'field' }, el('label', {}, 'Change password'), curPass),
-        el('div', { class: 'field' }, newPass),
+        el('div', { class: 'field' }, el('label', {}, 'Username'), curUser),
+        el('div', { class: 'field' }, el('label', {}, 'Current password'), curPass),
+        el('div', { class: 'field' }, el('label', {}, 'New password'), newPass),
         changePass),
     ));
 }

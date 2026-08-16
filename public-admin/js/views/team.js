@@ -1,5 +1,6 @@
 import { get, post, del } from '/js/api.js';
 import { el, icons, formModal, confirmModal, toast, fmtDate } from '/js/ui.js';
+import { changeLoginModal } from '../credentials.js';
 
 const ROLE_BADGE = { owner: 'purple', manager: 'accent', support: 'cyan' };
 const ROLE_LABEL = { owner: 'Owner', manager: 'Manager', support: 'Support' };
@@ -36,6 +37,7 @@ export default async function teamView() {
   function row(u) {
     const isOwner = u.role === 'owner';
     const actions = el('div', { class: 'row-actions', style: { opacity: 1, gap: '6px' } });
+    actions.append(el('button', { class: 'btn ghost sm', onclick: () => changeLoginModal(u, { onSaved: refresh }) }, 'Change login'));
     if (!isOwner) {
       const otherRole = u.role === 'support' ? 'manager' : 'support';
       actions.append(

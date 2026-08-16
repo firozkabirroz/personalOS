@@ -6,6 +6,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { db, getSetting, setSetting } = require('./db');
 const { ownerId, mask, logActivity } = require('./platform');
+const { setUserCredentials, defaultLoginRisks } = require('./credentials');
 const { KEY_FIELDS, PROVIDER_IDS, PROVIDERS, inferProvider, chatCompletionsUrl, guessKeyProvider, keyForProvider, looksLikeUrl, formatProviderError, GROQ_DEFAULT_MODEL, GROQ_MODEL_MIGRATIONS } = require('./ai-providers');
 
 const STAFF_ROLES = ['owner', 'manager', 'support'];
@@ -66,6 +67,7 @@ router.get('/admin/overview', requireAdmin, async (req, res) => {
     openTickets: (await db.prepare("SELECT COUNT(*) c FROM tickets WHERE status='open'").get()).c,
     aiChatsTotal: (await db.prepare("SELECT COUNT(*) c FROM chats WHERE role='user'").get()).c,
     aiModels: (await db.prepare('SELECT COUNT(*) c FROM ai_models WHERE active=1').get()).c,
+    loginRisks: await defaultLoginRisks(),
   });
 });
 
@@ -80,6 +82,27 @@ router.delete('/admin/users/:id', requireAdmin, async (req, res) => {
   if (user.role !== 'user') return res.status(400).json({ error: 'Use Team management to remove staff accounts' });
   await db.prepare('DELETE FROM users WHERE id=?').run(user.id);
   res.json({ ok: true });
+});
+
+router.post('/admin/users/:id/credentials', requireAdmin, async (req, res) => {
+  const target = await db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  const actor = await db.prepare('SELECT id, role FROM users WHERE id=?').get(req.userId);
+  const isSelf = Number(target.id) === Number(req.userId);
+  if (actor.role !== 'owner' && target.role !== 'user' && !isSelf) {
+    return res.status(403).json({ error: 'Only the owner can change staff logins' });
+  }
+  try {
+    const user = await setUserCredentials(target, {
+      username: req.body?.username,
+      password: req.body?.password,
+      currentPassword: req.body?.currentPassword,
+      requireCurrent: isSelf,
+    });
+    res.json({ ok: true, user });
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message });
+  }
 });
 
 // ============ Team management (owner only) ============

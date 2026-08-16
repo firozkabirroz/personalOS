@@ -171,12 +171,31 @@ router.get('/google/callback', async (req, res) => {
 router.post('/change-password', requireAuth, async (req, res) => {
   const { current, next } = req.body || {};
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
-  if (!user || !bcrypt.compareSync(current || '', user.password_hash)) {
-    return res.status(401).json({ error: 'Current password is incorrect' });
+  if (!user) return res.status(401).json({ error: 'User not found' });
+  try {
+    const { setUserCredentials } = require('./credentials');
+    await setUserCredentials(user, { password: next, currentPassword: current, requireCurrent: true });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(e.status === 400 && /incorrect/i.test(e.message) ? 401 : (e.status || 400)).json({ error: e.message });
   }
-  if (!next || next.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters' });
-  await db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(bcrypt.hashSync(next, 10), req.userId);
-  res.json({ ok: true });
+});
+
+router.post('/account', requireAuth, async (req, res) => {
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.userId);
+  if (!user) return res.status(401).json({ error: 'User not found' });
+  try {
+    const { setUserCredentials } = require('./credentials');
+    const updated = await setUserCredentials(user, {
+      username: req.body?.username,
+      password: req.body?.next || req.body?.password,
+      currentPassword: req.body?.current || req.body?.currentPassword,
+      requireCurrent: true,
+    });
+    res.json({ ok: true, user: updated });
+  } catch (e) {
+    res.status(e.status === 400 && /incorrect/i.test(e.message) ? 401 : (e.status || 400)).json({ error: e.message });
+  }
 });
 
 function requireAuth(req, res, next) {

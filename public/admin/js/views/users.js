@@ -1,5 +1,6 @@
 import { get, del } from '/js/api.js';
 import { el, icons, modal, confirmModal, toast, fmtDate } from '/js/ui.js';
+import { changeLoginModal } from '../credentials.js';
 
 async function showDetail(u) {
   const d = await get(`/admin/users/${u.id}/detail`);
@@ -60,12 +61,14 @@ export default async function usersView() {
       const actions = el('div', { class: 'row-actions', style: { opacity: 1, gap: '4px' } });
       actions.append(
         el('button', { class: 'btn ghost sm', onclick: () => showDetail(u) }, 'View'),
+        el('button', { class: 'btn ghost sm', onclick: () => changeLoginModal(u, { onSaved: render }) }, 'Change login'),
         (() => { const b = el('button', { class: 'icon-btn', title: 'Delete user', onclick: () => confirmModal(`Delete "${u.username}" and ALL their data permanently?`, async () => { await del(`/admin/users/${u.id}`); toast('User deleted'); render(); }) }); b.innerHTML = icons.trash; return b; })());
       return el('tr', {},
         el('td', {}, el('b', {}, u.username), u.name && u.name !== u.username ? el('div', { class: 'muted' }, u.name) : null),
         el('td', {}, fmtDate(u.created_at?.slice(0, 10))),
         el('td', {}, u.last_login_at ? fmtDate(u.last_login_at.slice(0, 10)) : '—'),
-        el('td', {}, el('span', { class: 'badge green' }, 'free · active')),
+        el('td', {}, el('span', { class: `badge ${['admin', 'demo'].includes(u.username) ? '' : 'green'}` },
+          ['admin', 'demo'].includes(u.username) ? 'default login' : 'free · active')),
         el('td', {}, actions));
     });
     body.replaceChildren(el('div', { class: 'card table-scroll', style: { padding: '8px 4px' } },
@@ -77,6 +80,6 @@ export default async function usersView() {
 
   return el('div', {},
     el('div', { class: 'page-head' },
-      el('div', {}, el('h2', {}, 'Users'), el('p', {}, 'Everyone is free — tap View to inspect data, chats & activity'))),
+      el('div', {}, el('h2', {}, 'Users'), el('p', {}, 'Change login on demo accounts, or delete them — tap View to inspect data'))),
     body);
 }
