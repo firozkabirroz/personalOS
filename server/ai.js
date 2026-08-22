@@ -3,9 +3,9 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const { db, getSetting, setSetting, DATA_DIR } = require('./db');
+const { db, getSetting, DATA_DIR } = require('./db');
 const { ownerId } = require('./platform');
-const { PROVIDERS, inferProvider, keyForProvider, chatCompletionsUrl, formatProviderError, sanitizeKey } = require('./ai-providers');
+const { PROVIDERS, credsFor, modelReady, chatCompletionsUrl, formatProviderError, formatFetchError, sanitizeKey, openaiCompatHeaders, isLocalAiUrl, isGroqEndpoint } = require('./ai-providers');
 
 const router = express.Router();
 
@@ -122,10 +122,6 @@ function normalizeKey(k) {
   return sanitizeKey(k);
 }
 
-function isLocalAiUrl(url) {
-  return /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(String(url || ''));
-}
-
 async function loadPlatformAI(oid) {
   if (!oid) {
     return { openai: '', anthropic: '', groq: '', gemini: '', openrouter: '', cerebras: '', custom: '', customUrl: '' };
@@ -143,69 +139,39 @@ async function loadPlatformAI(oid) {
   await Promise.all(Object.entries(fields).map(async ([name, field]) => {
     out[name] = normalizeKey(await getSetting(oid, field));
   }));
-  const groq = keyForProvider('groq', out);
-  if (groq && groq !== out.groq) {
-    out.groq = groq;
-    try { await setSetting(oid, 'admin_groq_key', groq); } catch { /* ignore */ }
-  }
   return out;
-}
-
-function credsFor(model, keys) {
-  if (!model) return { provider: 'custom', apiKey: '', baseUrl: '' };
-  const provider = inferProvider(model.model_id, model.provider);
-  const spec = PROVIDERS[provider] || PROVIDERS.custom;
-  if (provider === 'anthropic') return { provider, apiKey: keyForProvider('anthropic', keys), baseUrl: '' };
-  if (provider === 'openai') return { provider, apiKey: keyForProvider('openai', keys), baseUrl: spec.baseUrl };
-  if (provider === 'custom') return { provider, apiKey: keys.custom, baseUrl: keys.customUrl };
-  return { provider, apiKey: keyForProvider(provider, keys), baseUrl: spec.baseUrl };
-}
-
-function modelReady(model, keys) {
-  const { provider, apiKey, baseUrl } = credsFor(model, keys);
-  if (provider === 'custom') return !!(baseUrl && (apiKey || isLocalAiUrl(baseUrl)));
-  if (provider === 'anthropic' || provider === 'openai') return !!apiKey;
-  return !!(apiKey && baseUrl);
 }
 
 async function listActiveModels() {
   const rows = await db.prepare(`SELECT id, name, provider, model_id, position FROM ai_models
-    WHERE active=1 ORDER BY CASE provider
-      WHEN 'groq' THEN 0 WHEN 'gemini' THEN 1 WHEN 'openrouter' THEN 2 WHEN 'cerebras' THEN 3
-      WHEN 'custom' THEN 4 ELSE 5 END, position ASC, id ASC`).all();
+    WHERE active=1 ORDER BY position ASC, id ASC`).all();
   const keys = await loadPlatformAI(await ownerId());
-  const ready = rows.filter((m) => modelReady(m, keys));
-  return ready;
+  return rows.filter((m) => modelReady(m, keys));
 }
 
 async function resolveModel(modelDbId, keys) {
   if (modelDbId) {
     const m = await db.prepare('SELECT * FROM ai_models WHERE id=? AND active=1').get(modelDbId);
-    if (m && modelReady(m, keys)) return m;
+    if (m) return { model: m, requested: true };
   }
-  const rows = await db.prepare(`SELECT * FROM ai_models WHERE active=1
-    ORDER BY CASE provider
-      WHEN 'groq' THEN 0 WHEN 'gemini' THEN 1 WHEN 'openrouter' THEN 2 WHEN 'cerebras' THEN 3
-      WHEN 'custom' THEN 4 ELSE 5 END, position ASC, id ASC`).all();
-  return rows.find((m) => modelReady(m, keys)) || null;
+  const rows = await db.prepare('SELECT * FROM ai_models WHERE active=1 ORDER BY position ASC, id ASC').all();
+  return { model: rows.find((m) => modelReady(m, keys)) || null, requested: false };
 }
 
 /** Resolve platform key + model for a chat — everything is free for everyone. */
 async function resolveAIRoute(modelDbId) {
   const oid = await ownerId();
   const keys = await loadPlatformAI(oid);
-  const model = await resolveModel(modelDbId, keys);
+  const { model, requested } = await resolveModel(modelDbId, keys);
   if (!model) return { error: 'No AI model is available. Ask the admin to add one in Admin → AI Models.' };
 
   const creds = credsFor(model, keys);
   if (!modelReady(model, keys)) {
-    const fallback = (await db.prepare('SELECT * FROM ai_models WHERE active=1').all())
-      .find((m) => modelReady(m, keys));
-    if (fallback) {
-      const fb = credsFor(fallback, keys);
-      return { provider: fb.provider, apiKey: fb.apiKey, model: fallback.model_id, baseUrl: fb.baseUrl, modelRow: fallback };
+    const label = PROVIDERS[creds.provider]?.label || creds.provider;
+    if (requested) {
+      return { error: `"${model.name}" needs a ${label} API key. Admin → AI Models-এ ${label} connect করুন।` };
     }
-    return { error: `${creds.provider} API key missing. Admin → AI Models-এ ${PROVIDERS[creds.provider]?.label || creds.provider} key সেভ করুন।` };
+    return { error: `${label} API key missing. Admin → AI Models-এ ${label} key সেভ করুন।` };
   }
 
   return {
@@ -280,7 +246,11 @@ async function callAnthropic({ apiKey, model, system, messages, userContent }) {
     body: JSON.stringify({ model: model || 'claude-sonnet-4-6', max_tokens: 2048, system, messages: formatted }),
   });
   const data = await resp.json();
-  if (!resp.ok) throw new Error(data?.error?.message || `Anthropic API error (${resp.status})`);
+  if (!resp.ok) {
+    throw new Error(formatProviderError(resp.status, data?.error?.message || `Anthropic API error (${resp.status})`, {
+      host: 'api.anthropic.com', model, apiKey, provider: 'anthropic',
+    }));
+  }
   return (data.content || []).map(b => b.text || '').join('');
 }
 
@@ -289,17 +259,19 @@ function clipText(text, n) {
   return s.length <= n ? s : s.slice(0, n) + '\n…[truncated]';
 }
 
-function openaiChatBody({ model, system, formatted, groqReasoning, large }) {
+function openaiChatBody({ model, system, formatted, groqReasoning, large, provider }) {
   const body = {
     model: model || 'gpt-4o-mini',
     stream: true,
     messages: [{ role: 'system', content: clipText(system, large ? 2500 : 14000) }, ...formatted.slice(large ? -4 : -10)],
   };
-  if (groqReasoning) {
-    body.max_completion_tokens = large ? 2048 : 3072;
-    body.reasoning_effort = 'low';
+  const n = large ? 2048 : 3072;
+  // OpenAI chat completions reject max_tokens; Groq gpt-oss needs max_completion_tokens too.
+  if (provider === 'openai' || groqReasoning) {
+    body.max_completion_tokens = n;
+    if (groqReasoning) body.reasoning_effort = 'low';
   } else {
-    body.max_tokens = large ? 2048 : 3072;
+    body.max_tokens = n;
   }
   return body;
 }
@@ -341,7 +313,7 @@ async function readOpenAiStream(resp, { deadline }) {
   return { text: text.trim(), truncated };
 }
 
-async function openAiRequest(url, apiKey, body, deadline) {
+async function openAiRequest(url, apiKey, body, deadline, baseUrl) {
   const ms = Math.max(3000, deadline - Date.now());
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), ms);
@@ -349,7 +321,7 @@ async function openAiRequest(url, apiKey, body, deadline) {
     return await fetch(url, {
       method: 'POST',
       signal: ac.signal,
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+      headers: openaiCompatHeaders(apiKey, baseUrl),
       body: JSON.stringify(body),
     });
   } finally {
@@ -357,7 +329,7 @@ async function openAiRequest(url, apiKey, body, deadline) {
   }
 }
 
-async function callOpenAI({ apiKey, model, baseUrl, system, messages, userContent }) {
+async function callOpenAI({ apiKey, model, baseUrl, system, messages, userContent, provider }) {
   const url = chatCompletionsUrl(baseUrl);
   const formatted = messages.map((m) => ({
     role: m.role,
@@ -378,18 +350,19 @@ async function callOpenAI({ apiKey, model, baseUrl, system, messages, userConten
     : Array.isArray(last?.content) ? last.content.reduce((n, p) => n + String(p.text || '').length, 0) : 0;
   const large = lastLen > 1200 || String(system || '').length > 10000;
   const id = String(model || '').toLowerCase();
-  const groqReasoning = id.includes('gpt-oss') || id.includes('qwen3.6') || id.startsWith('groq/');
-  const body = openaiChatBody({ model, system, formatted, groqReasoning, large });
+  const groqReasoning = (provider === 'groq' || isGroqEndpoint(baseUrl))
+    && (id.includes('gpt-oss') || id.includes('qwen3.6') || id.startsWith('groq/'));
+  const body = openaiChatBody({ model, system, formatted, groqReasoning, large, provider });
   const deadline = Date.now() + 52000;
 
   let resp;
   try {
-    resp = await openAiRequest(url, apiKey, body, deadline);
+    resp = await openAiRequest(url, apiKey, body, deadline, baseUrl);
   } catch (e) {
     if (e.name === 'AbortError') {
       throw new Error('This task is too large to finish in one go. Split it: ask for an outline first, then each section in a new message.');
     }
-    throw new Error('Could not reach the AI provider. Try again in a moment.');
+    throw new Error(formatFetchError(e, url));
   }
 
   let lastRaw = '';
@@ -405,11 +378,19 @@ async function callOpenAI({ apiKey, model, baseUrl, system, messages, userConten
     const paramErr = resp.status === 400 && /unknown|unsupported|unexpected|invalid.*param|max_tokens|reasoning|stream/i.test(String(raw));
     if (paramErr) {
       delete body.reasoning_effort;
-      delete body.max_completion_tokens;
       delete body.stream;
-      body.max_tokens = large ? 2048 : 3072;
+      // OpenAI must keep max_completion_tokens. Other OpenAI-compatible APIs may need the swap.
+      if (provider !== 'openai') {
+        if (body.max_completion_tokens && !body.max_tokens) {
+          body.max_tokens = body.max_completion_tokens;
+          delete body.max_completion_tokens;
+        } else if (body.max_tokens) {
+          body.max_completion_tokens = body.max_tokens;
+          delete body.max_tokens;
+        }
+      }
       try {
-        resp = await openAiRequest(url, apiKey, body, deadline);
+        resp = await openAiRequest(url, apiKey, body, deadline, baseUrl);
         lastRaw = '';
       } catch (e) {
         if (e.name === 'AbortError') {
@@ -425,7 +406,7 @@ async function callOpenAI({ apiKey, model, baseUrl, system, messages, userConten
     if (/too large|context_length|maximum context|reduce the length|prompt is too long/i.test(String(raw)) && formatted.length > 3) {
       body.messages = [{ role: 'system', content: clipText(system, 2000) }, ...formatted.slice(-2)];
       try {
-        resp = await openAiRequest(url, apiKey, body, deadline);
+        resp = await openAiRequest(url, apiKey, body, deadline, baseUrl);
         lastRaw = '';
       } catch (e) {
         if (e.name === 'AbortError') {
@@ -440,7 +421,7 @@ async function callOpenAI({ apiKey, model, baseUrl, system, messages, userConten
     const raw = await readErr();
     let host = url;
     try { host = new URL(url).hostname; } catch {}
-    throw new Error(formatProviderError(resp.status, raw, { host, model, apiKey }));
+    throw new Error(formatProviderError(resp.status, raw, { host, model, apiKey, provider }));
   }
 
   if (!body.stream) {
@@ -572,7 +553,7 @@ ${context || '(No data yet — the user has not added anything.)'}
     let reply;
     const contentArg = parts.length ? userContent : null;
     if (provider === 'anthropic') reply = await callAnthropic({ apiKey, model, system, messages, userContent: contentArg });
-    else reply = await callOpenAI({ apiKey, model, baseUrl, system, messages, userContent: contentArg });
+    else reply = await callOpenAI({ apiKey, model, baseUrl, system, messages, userContent: contentArg, provider });
 
     const displayMsg = message || '(attachment)';
     await db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments, conversation_id) VALUES (?,?,?,?,?,?)')

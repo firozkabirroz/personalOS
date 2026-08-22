@@ -8,7 +8,7 @@ const { router: filesRouter } = require('./files');
 const settingsRouter = require('./settings');
 const aiRouter = require('./ai');
 const integrationsRouter = require('./integrations');
-const { router: telegramRouter } = require('./telegram');
+const { router: telegramRouter, runTelegramTick } = require('./telegram');
 const { router: billingRouter, publicRouter: billingPublicRouter, subscriptionGate } = require('./billing');
 const { router: supportRouter } = require('./support');
 const { router: adminRouter } = require('./admin');
@@ -30,6 +30,27 @@ app.use(express.static(publicDir));
 
 app.use('/api/auth', authRouter);
 app.use('/api', billingPublicRouter);
+
+function cronAuthorized(req) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret) return !process.env.VERCEL;
+  return (req.headers.authorization || '') === `Bearer ${secret}`;
+}
+
+async function telegramCron(req, res) {
+  if (!cronAuthorized(req)) {
+    return res.status(401).json({ error: 'Unauthorized — set CRON_SECRET in Vercel env' });
+  }
+  try {
+    await runTelegramTick();
+    res.json({ ok: true, at: new Date().toISOString() });
+  } catch (e) {
+    console.error('Telegram cron:', e);
+    res.status(500).json({ error: e.message || 'Cron failed' });
+  }
+}
+app.get('/api/cron/telegram', telegramCron);
+app.post('/api/cron/telegram', telegramCron);
 
 // OAuth callbacks must be reachable without the Bearer header
 app.use('/api', (req, res, next) => {

@@ -7,7 +7,7 @@ const bcrypt = require('bcryptjs');
 const { db, getSetting, setSetting } = require('./db');
 const { ownerId, mask, logActivity } = require('./platform');
 const { setUserCredentials, defaultLoginRisks } = require('./credentials');
-const { KEY_FIELDS, PROVIDER_IDS, PROVIDERS, inferProvider, chatCompletionsUrl, guessKeyProvider, keyForProvider, looksLikeUrl, formatProviderError, GROQ_DEFAULT_MODEL, GROQ_MODEL_MIGRATIONS, sanitizeKey, assertUsableKey } = require('./ai-providers');
+const { KEY_FIELDS, PROVIDER_IDS, PROVIDERS, inferProvider, looksLikeUrl, GROQ_MODEL_MIGRATIONS, GROQ_DEFAULT_MODEL, sanitizeKey, assertUsableKey, probeChat, credsFor, DEFAULT_TEST_MODELS, isLocalAiUrl, isGroqEndpoint, normalizeBaseUrl, guessKeyProvider } = require('./ai-providers');
 
 const STAFF_ROLES = ['owner', 'manager', 'support'];
 
@@ -165,24 +165,38 @@ router.post('/admin/ai-keys', requireAdmin, async (req, res) => {
       const val = req.body?.[key];
       if (typeof val === 'string' && val.trim() && !val.includes('••')) {
         let trimmed = val.trim();
-        if (!key.endsWith('_base_url')) {
+        if (key.endsWith('_base_url')) {
+          trimmed = normalizeBaseUrl(trimmed);
+        } else {
+          if (key === 'admin_custom_key' && looksLikeUrl(trimmed)) {
+            await setSetting(oid, 'admin_custom_base_url', normalizeBaseUrl(trimmed));
+            saved.push('admin_custom_base_url');
+            continue;
+          }
+          const provider = Object.keys(PROVIDERS).find((id) => PROVIDERS[id].keyField === key) || '';
           try {
-            trimmed = assertUsableKey(trimmed, key === 'admin_groq_key' ? 'groq' : '');
+            trimmed = assertUsableKey(trimmed, provider);
           } catch (e) {
             return res.status(e.status || 400).json({ error: e.message });
           }
-        }
-        if (!key.endsWith('_base_url') && looksLikeUrl(trimmed)) {
-          return res.status(400).json({ error: 'That is a base URL, not an API key. Groq key must start with gsk_ (console.groq.com/keys).' });
+          if (looksLikeUrl(trimmed)) {
+            return res.status(400).json({ error: 'That is a base URL, not an API key. Paste the secret into the key field and the endpoint into Custom base URL.' });
+          }
         }
         await setSetting(oid, key, trimmed);
         saved.push(key);
-        const guessed = guessKeyProvider(trimmed);
-        if (guessed && PROVIDERS[guessed] && PROVIDERS[guessed].keyField !== key) {
-          await setSetting(oid, PROVIDERS[guessed].keyField, trimmed);
-          saved.push(PROVIDERS[guessed].keyField);
-        }
       }
+    }
+    const customKey = sanitizeKey(await getSetting(oid, 'admin_custom_key'));
+    const customUrl = String(await getSetting(oid, 'admin_custom_base_url') || '').trim();
+    if (guessKeyProvider(customKey) === 'groq' && !customUrl) {
+      await setSetting(oid, 'admin_custom_base_url', PROVIDERS.groq.baseUrl);
+      saved.push('admin_custom_base_url');
+    }
+    const groqSlot = sanitizeKey(await getSetting(oid, 'admin_groq_key'));
+    if (guessKeyProvider(customKey) === 'groq' && !groqSlot) {
+      await setSetting(oid, 'admin_groq_key', customKey);
+      saved.push('admin_groq_key');
     }
   } catch (e) {
     return res.status(500).json({ error: 'Failed to save API settings: ' + e.message });
@@ -195,23 +209,18 @@ router.post('/admin/ai-test', requireAdmin, async (req, res) => {
   const oid = await ownerId();
   if (!oid) return res.status(500).json({ error: 'Owner account missing' });
   const body = req.body || {};
-  let provider = PROVIDER_IDS.includes(body.provider) ? body.provider : inferProvider(body.model_id, 'custom');
-  const customUrlHint = typeof body.admin_custom_base_url === 'string' ? body.admin_custom_base_url : '';
-  if (provider === 'custom' && /api\.groq\.com/i.test(customUrlHint || await getSetting(oid, 'admin_custom_base_url') || '')) {
-    provider = 'groq';
-  }
+  const provider = PROVIDER_IDS.includes(body.provider)
+    ? body.provider
+    : inferProvider(body.model_id, 'custom');
   const spec = PROVIDERS[provider] || PROVIDERS.custom;
   const keyField = spec.keyField;
-  const liveKey = typeof body[keyField] === 'string' && body[keyField].trim() && !body[keyField].includes('••')
-    ? sanitizeKey(body[keyField])
-    : '';
-  if (liveKey && looksLikeUrl(liveKey)) {
-    return res.status(400).json({ error: 'That is a base URL, not an API key. Paste a gsk_ key from https://console.groq.com/keys into the Groq card.' });
-  }
-  if (liveKey && (provider === 'groq' || guessKeyProvider(liveKey) === 'groq')) {
-    try { assertUsableKey(liveKey, 'groq'); }
-    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
-  }
+
+  const live = (field) => {
+    const val = body[field];
+    if (typeof val !== 'string' || !val.trim() || val.includes('••')) return '';
+    return field.endsWith('_base_url') ? val.trim().replace(/\/+$/, '') : sanitizeKey(val);
+  };
+
   const packed = {
     groq: sanitizeKey(await getSetting(oid, 'admin_groq_key')),
     gemini: sanitizeKey(await getSetting(oid, 'admin_gemini_key')),
@@ -220,63 +229,51 @@ router.post('/admin/ai-test', requireAdmin, async (req, res) => {
     custom: sanitizeKey(await getSetting(oid, 'admin_custom_key')),
     openai: sanitizeKey(await getSetting(oid, 'admin_openai_key')),
     anthropic: sanitizeKey(await getSetting(oid, 'admin_anthropic_key')),
+    customUrl: String(await getSetting(oid, 'admin_custom_base_url') || '').trim(),
   };
-  if (typeof body.admin_custom_key === 'string' && body.admin_custom_key.trim() && !body.admin_custom_key.includes('••')) {
-    packed.custom = sanitizeKey(body.admin_custom_key);
-  }
-  if (liveKey) packed[provider] = liveKey;
-  const apiKey = (liveKey && (!guessKeyProvider(liveKey) || guessKeyProvider(liveKey) === provider || provider === 'custom'))
-    ? liveKey
-    : keyForProvider(provider, packed);
-  if (provider === 'groq' && apiKey) {
-    try { assertUsableKey(apiKey, 'groq'); }
+  const liveKey = live(keyField);
+  if (liveKey) {
+    if (looksLikeUrl(liveKey)) {
+      return res.status(400).json({ error: 'That is a base URL, not an API key. Paste the secret into the key field.' });
+    }
+    try { packed[provider] = assertUsableKey(liveKey, provider); }
     catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
   }
-  const baseUrl = spec.baseUrl
-    || (typeof body.admin_custom_base_url === 'string' ? body.admin_custom_base_url.trim() : '')
-    || await getSetting(oid, 'admin_custom_base_url');
-  let modelId = (body.model_id || '').trim();
-  if (provider === 'groq' && (!modelId || inferProvider(modelId, provider) !== 'groq' || GROQ_MODEL_MIGRATIONS[modelId])) {
-    modelId = GROQ_DEFAULT_MODEL;
+  const liveUrl = live('admin_custom_base_url');
+  if (liveUrl) packed.customUrl = normalizeBaseUrl(liveUrl);
+  else packed.customUrl = normalizeBaseUrl(packed.customUrl);
+  if (!packed.customUrl && guessKeyProvider(packed.custom) === 'groq') {
+    packed.customUrl = PROVIDERS.groq.baseUrl;
   }
+
+  const dummy = { model_id: body.model_id, provider };
+  const creds = credsFor(dummy, packed);
+  let modelId = String(body.model_id || '').trim();
+  if (GROQ_MODEL_MIGRATIONS[modelId]) modelId = GROQ_MODEL_MIGRATIONS[modelId].model_id;
   if (!modelId) {
     modelId = (await db.prepare('SELECT model_id FROM ai_models WHERE provider=? AND active=1 ORDER BY position ASC LIMIT 1').get(provider))?.model_id
-      || (await db.prepare('SELECT model_id FROM ai_models WHERE active=1 ORDER BY position ASC LIMIT 1').get())?.model_id
+      || (isGroqEndpoint(creds.baseUrl) ? GROQ_DEFAULT_MODEL : '')
+      || DEFAULT_TEST_MODELS[provider]
       || '';
   }
-  if (!baseUrl) return res.status(400).json({ error: 'Save a base URL first (or pick a free preset).' });
-  if (!apiKey) return res.status(400).json({ error: `Save a ${spec.label} API key first, then Test.` });
-  if (!modelId) return res.status(400).json({ error: 'Add a model to the catalog first.' });
-
-  const url = chatCompletionsUrl(baseUrl);
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 20000);
-  try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      signal: ac.signal,
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: modelId,
-        messages: [{ role: 'user', content: 'Reply with the single word: pong' }],
-        max_tokens: 16,
-      }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      const raw = data?.error?.message || data?.error || `HTTP ${resp.status}`;
-      let host = url;
-      try { host = new URL(url).hostname; } catch {}
-      return res.status(502).json({ ok: false, error: formatProviderError(resp.status, raw, { host, model: modelId, apiKey }), model: modelId, url });
-    }
-    const reply = data.choices?.[0]?.message?.content || JSON.stringify(data).slice(0, 200);
-    res.json({ ok: true, reply, model: modelId, url });
-  } catch (e) {
-    const msg = e.name === 'AbortError' ? 'Request timed out (20s)' : e.message;
-    res.status(502).json({ ok: false, error: msg, model: modelId, url });
-  } finally {
-    clearTimeout(timer);
+  if (provider === 'custom' && !creds.baseUrl) {
+    return res.status(400).json({ error: 'Save a Custom base URL first (OpenAI-compatible, e.g. https://api.together.xyz/v1).' });
   }
+  if (!creds.apiKey && !(provider === 'custom' && isLocalAiUrl(creds.baseUrl))) {
+    return res.status(400).json({ error: `Save a ${spec.label} API key first, then Test.` });
+  }
+  if (!modelId) {
+    return res.status(400).json({ error: 'Enter a model ID to test (or add one to the catalog).' });
+  }
+
+  const result = await probeChat({
+    provider,
+    apiKey: creds.apiKey || 'not-needed',
+    baseUrl: creds.baseUrl,
+    modelId,
+  });
+  if (!result.ok) return res.status(502).json(result);
+  res.json(result);
 });
 
 // ============ AI model catalog — every model is free for every user ============
@@ -287,10 +284,10 @@ router.get('/admin/ai-models', requireAdmin, async (req, res) => {
 router.post('/admin/ai-models', requireAdmin, async (req, res) => {
   const { name, provider, model_id } = req.body || {};
   if (!name?.trim() || !model_id?.trim()) return res.status(400).json({ error: 'Name and model ID are required' });
-  if (!PROVIDER_IDS.includes(provider)) return res.status(400).json({ error: 'Invalid provider' });
+  const prov = PROVIDER_IDS.includes(provider) ? provider : inferProvider(model_id, 'custom');
   const maxPos = (await db.prepare('SELECT COALESCE(MAX(position),0) m FROM ai_models').get()).m;
   const info = await db.prepare(`INSERT INTO ai_models (name, provider, model_id, position)
-    VALUES (?,?,?,?)`).run(name.trim(), provider, model_id.trim(), maxPos + 1);
+    VALUES (?,?,?,?)`).run(name.trim(), prov, model_id.trim(), maxPos + 1);
   res.json(await db.prepare('SELECT id, name, provider, model_id, position, active FROM ai_models WHERE id=?').get(info.lastInsertRowid));
 });
 
@@ -298,8 +295,9 @@ router.put('/admin/ai-models/:id', requireAdmin, async (req, res) => {
   const m = await db.prepare('SELECT * FROM ai_models WHERE id=?').get(req.params.id);
   if (!m) return res.status(404).json({ error: 'Not found' });
   const { name, provider, model_id, active } = req.body || {};
+  const nextProvider = PROVIDER_IDS.includes(provider) ? provider : m.provider;
   await db.prepare(`UPDATE ai_models SET name=?, provider=?, model_id=?, active=? WHERE id=?`)
-    .run(name?.trim() || m.name, provider || m.provider, model_id?.trim() || m.model_id,
+    .run(name?.trim() || m.name, nextProvider, model_id?.trim() || m.model_id,
       active !== undefined ? (active ? 1 : 0) : m.active, m.id);
   res.json(await db.prepare('SELECT id, name, provider, model_id, position, active FROM ai_models WHERE id=?').get(m.id));
 });

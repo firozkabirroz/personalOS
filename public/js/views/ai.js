@@ -23,7 +23,7 @@ export default async function aiView() {
     return el('div', { class: 'empty' },
       el('div', { class: 'big' }, '🔑'),
       el('h3', {}, 'No AI model is connected yet'),
-      el('p', { class: 'muted' }, 'Admin → AI Models-এ Groq/Gemini key সেভ করুন এবং একটি Custom মডেল অ্যাড করুন। OpenAI/Claude মডেল চালাতে সেই paid key লাগে।'));
+      el('p', { class: 'muted' }, 'Admin → AI Models-এ OpenAI, Anthropic, Groq, বা যেকোনো custom API connect করুন, তারপর একটি মডেল অ্যাড করুন।'));
   }
 
   const scroll = el('div', { class: 'chat-scroll' });

@@ -256,4 +256,4 @@ router.post('/telegram/forward', async (req, res) => {
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
-module.exports = { router, send, escapeHtml, startScheduler, financeReport };
+module.exports = { router, send, escapeHtml, startScheduler, financeReport, runTelegramTick: tick, morningReport, nightReport };
