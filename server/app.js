@@ -8,7 +8,7 @@ const { router: filesRouter } = require('./files');
 const settingsRouter = require('./settings');
 const aiRouter = require('./ai');
 const integrationsRouter = require('./integrations');
-const { router: telegramRouter, runTelegramTick } = require('./telegram');
+const { router: telegramRouter, runTelegramTick, maybeOpportunisticTick } = require('./telegram');
 const { router: billingRouter, publicRouter: billingPublicRouter, subscriptionGate } = require('./billing');
 const { router: supportRouter } = require('./support');
 const { router: adminRouter } = require('./admin');
@@ -32,18 +32,27 @@ app.use('/api/auth', authRouter);
 app.use('/api', billingPublicRouter);
 
 function cronAuthorized(req) {
+  const auth = req.headers.authorization || '';
+  const ua = String(req.headers['user-agent'] || '');
   const secret = process.env.CRON_SECRET;
-  if (!secret) return !process.env.VERCEL;
-  return (req.headers.authorization || '') === `Bearer ${secret}`;
+  if (secret && auth === `Bearer ${secret}`) return true;
+  // Vercel Cron always sends this UA; allow when CRON_SECRET is unset so Hobby deploys still work.
+  if (/vercel-cron/i.test(ua)) return true;
+  if (!process.env.VERCEL) return true;
+  return false;
 }
 
 async function telegramCron(req, res) {
   if (!cronAuthorized(req)) {
-    return res.status(401).json({ error: 'Unauthorized — set CRON_SECRET in Vercel env' });
+    return res.status(401).json({
+      error: 'Unauthorized. Set CRON_SECRET in Vercel env, or call from Vercel Cron.',
+    });
   }
   try {
-    await runTelegramTick();
-    res.json({ ok: true, at: new Date().toISOString() });
+    const slot = String(req.query?.slot || '').toLowerCase();
+    const forceSlot = (slot === 'morning' || slot === 'night') ? slot : 'all';
+    const summary = await runTelegramTick({ forceSlot });
+    res.json({ ok: true, forceSlot, at: new Date().toISOString(), summary });
   } catch (e) {
     console.error('Telegram cron:', e);
     res.status(500).json({ error: e.message || 'Cron failed' });

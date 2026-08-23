@@ -100,6 +100,20 @@ export default async function settingsView() {
     testTg.disabled = false;
   } }, 'Send test message');
 
+  const sendMorning = el('button', { class: 'btn ghost sm', onclick: async () => {
+    sendMorning.disabled = true;
+    try { await post('/telegram/report/morning'); toast('Morning report sent ✓'); }
+    catch (e) { toast(e.message, 'err'); }
+    sendMorning.disabled = false;
+  } }, 'Send morning now');
+
+  const sendNight = el('button', { class: 'btn ghost sm', onclick: async () => {
+    sendNight.disabled = true;
+    try { await post('/telegram/report/night'); toast('Night report sent ✓'); }
+    catch (e) { toast(e.message, 'err'); }
+    sendNight.disabled = false;
+  } }, 'Send night now');
+
   const notifOptions = (key, label, defaultOn = true) => {
     const val = defaultOn ? (s[key] === 'off' ? 'off' : 'on') : (s[key] === 'on' ? 'on' : 'off');
     return el('div', { class: 'field' }, el('label', {}, label),
@@ -159,7 +173,7 @@ export default async function settingsView() {
         notifOptions('notif_finance', '📊 Monthly finance report (1st of month)'),
         notifOptions('notif_payment', '💳 Payment status updates'),
         notifOptions('telegram_ai_reports', '🤖 AI task reports — every AI answer', false),
-        el('div', { style: { marginTop: '10px' } }, testTg)),
+        el('div', { style: { marginTop: '10px', display: 'flex', gap: '8px', flexWrap: 'wrap' } }, testTg, sendMorning, sendNight)),
 
       section('settings', 'General', null,
         el('div', { class: 'field' }, el('label', {}, 'Currency symbol'), currency),

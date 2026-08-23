@@ -205,6 +205,10 @@ function requireAuth(req, res, next) {
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     req.userId = payload.uid;
+    try {
+      const { maybeOpportunisticTick } = require('./telegram');
+      maybeOpportunisticTick();
+    } catch { /* ignore */ }
     next();
   } catch {
     res.status(401).json({ error: 'Session expired, please log in again' });

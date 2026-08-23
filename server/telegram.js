@@ -185,32 +185,70 @@ async function prefOn(uid, key) {
   return ((await getSetting(uid, key)) || 'on') === 'on';
 }
 
-async function tick() {
+/**
+ * Send due morning / night / finance reports.
+ * @param {{ forceSlot?: 'morning'|'night'|'all' }} [opts]
+ *   forceSlot=morning|night — ignore hour window (for Vercel daily crons timed to Dhaka UTC).
+ */
+async function tick(opts = {}) {
+  const force = opts.forceSlot || 'all';
   const users = await db.prepare(`SELECT DISTINCT user_id FROM settings WHERE key='telegram_bot_token' AND value != ''`).all();
-  for (const { user_id: uid } of users) {
-    if (!(await getSetting(uid, 'telegram_chat_id'))) continue;
+  const summary = { users: users.length, morning: 0, night: 0, finance: 0, skipped: 0, errors: [] };
+
+  for (const row of users) {
+    const uid = row.user_id;
+    if (!(await getSetting(uid, 'telegram_chat_id'))) {
+      summary.skipped++;
+      continue;
+    }
     const now = localNow((await getSetting(uid, 'timezone')) || 'Asia/Dhaka');
     try {
-      if (now.hour >= 10 && await prefOn(uid, 'notif_morning') && (await getSetting(uid, 'tg_last_morning')) !== now.date) {
-        await setSetting(uid, 'tg_last_morning', now.date);
+      const wantMorning = force === 'morning' || force === 'all';
+      const wantNight = force === 'night' || force === 'all';
+      const morningDue = wantMorning
+        && (force === 'morning' || now.hour >= 10)
+        && await prefOn(uid, 'notif_morning')
+        && (await getSetting(uid, 'tg_last_morning')) !== now.date;
+      if (morningDue) {
         await send(uid, await morningReport(uid, now.date));
+        await setSetting(uid, 'tg_last_morning', now.date);
+        summary.morning++;
       }
-      if (now.hour >= 22 && await prefOn(uid, 'notif_night') && (await getSetting(uid, 'tg_last_night')) !== now.date) {
-        await setSetting(uid, 'tg_last_night', now.date);
+
+      const nightDue = wantNight
+        && (force === 'night' || now.hour >= 22)
+        && await prefOn(uid, 'notif_night')
+        && (await getSetting(uid, 'tg_last_night')) !== now.date;
+      if (nightDue) {
         await send(uid, await nightReport(uid, now.date));
+        await setSetting(uid, 'tg_last_night', now.date);
+        summary.night++;
       }
+
       // Monthly finance report: 1st day of month at/after 10:00, covering previous month
       const thisMonth = now.date.slice(0, 7);
       if (now.day === '01' && now.hour >= 10 && await prefOn(uid, 'notif_finance') && (await getSetting(uid, 'tg_last_finance')) !== thisMonth) {
-        await setSetting(uid, 'tg_last_finance', thisMonth);
         const prev = new Date(thisMonth + '-01T00:00:00');
         prev.setMonth(prev.getMonth() - 1);
         await send(uid, await financeReport(uid, prev.toISOString().slice(0, 7)));
+        await setSetting(uid, 'tg_last_finance', thisMonth);
+        summary.finance++;
       }
     } catch (e) {
       console.error(`Telegram scheduler (user ${uid}):`, e.message);
+      summary.errors.push({ user_id: uid, error: e.message });
     }
   }
+  return summary;
+}
+
+let lastOpportunistic = 0;
+/** When the app is used, catch up any due reports (backup if Vercel cron missed). */
+function maybeOpportunisticTick() {
+  const now = Date.now();
+  if (now - lastOpportunistic < 5 * 60 * 1000) return;
+  lastOpportunistic = now;
+  tick().catch((e) => console.error('Telegram opportunistic tick:', e.message));
 }
 
 function startScheduler() {
@@ -237,12 +275,20 @@ router.post('/telegram/test', async (req, res) => {
 router.post('/telegram/report/:type', async (req, res) => {
   try {
     const uid = req.userId;
+    const today = await userToday(uid);
     let text;
-    if (req.params.type === 'morning') text = await morningReport(uid);
-    else if (req.params.type === 'night') text = await nightReport(uid);
-    else if (req.params.type === 'finance') text = await financeReport(uid, (req.body?.month || (await userToday(uid)).slice(0, 7)));
-    else return res.status(400).json({ error: 'Unknown report type' });
-    await send(uid, text);
+    if (req.params.type === 'morning') {
+      text = await morningReport(uid, today);
+      await send(uid, text);
+      await setSetting(uid, 'tg_last_morning', today);
+    } else if (req.params.type === 'night') {
+      text = await nightReport(uid, today);
+      await send(uid, text);
+      await setSetting(uid, 'tg_last_night', today);
+    } else if (req.params.type === 'finance') {
+      text = await financeReport(uid, (req.body?.month || today.slice(0, 7)));
+      await send(uid, text);
+    } else return res.status(400).json({ error: 'Unknown report type' });
     res.json({ ok: true });
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
@@ -256,4 +302,7 @@ router.post('/telegram/forward', async (req, res) => {
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
 
-module.exports = { router, send, escapeHtml, startScheduler, financeReport, runTelegramTick: tick, morningReport, nightReport };
+module.exports = {
+  router, send, escapeHtml, startScheduler, financeReport,
+  runTelegramTick: tick, maybeOpportunisticTick, morningReport, nightReport,
+};

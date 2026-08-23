@@ -6,7 +6,7 @@ Vercel-এ **এক ক্লিকে ফ্রি ডিপ্লয়** হ�
 |---|---|
 | Demo / আসল ইউজার + আসল ডাটা | ✅ Neon থাকলে ডাটা থাকে |
 | আপলোড করা ফাইল | ⚠️ এখনও `/tmp` — redeploy-এ হারাতে পারে |
-| Telegram scheduler | ✅ Vercel Cron (`/api/cron/telegram`, প্রতি ঘণ্টায়) — `CRON_SECRET` env দিন |
+| Telegram scheduler | ✅ দুইটা daily Cron (Hobby OK): সকাল `0 4 * * *` UTC = ১০:০০ Dhaka, রাত `0 16 * * *` UTC = ২২:০০ Dhaka |
 
 আপলোড ফাইল স্থায়ী রাখতে চাইলে পরে Vercel Blob যোগ করা যায়। VM চাইলে: **[HOSTING.md](HOSTING.md)** বা **[RAILWAY.md](RAILWAY.md)**।
 
@@ -41,7 +41,7 @@ Vercel dashboard → প্রজেক্ট → **Settings → Environment Var
 | `JWT_SECRET` | লম্বা একটা random string | না দিলে fallback secret — কাজ করবে, নিরাপত্তার জন্য নিজেরটা দিন |
 | `DEMO_ADMIN_PASSWORD` | (ঐচ্ছিক) admin পাসওয়ার্ড | default: `admin123` |
 | `DEMO_USER_PASSWORD` | (ঐচ্ছিক) demo পাসওয়ার্ড | default: `demo123` |
-| `CRON_SECRET` | random string | Telegram দৈনিক রিপোর্ট — Vercel Cron auth |
+| `CRON_SECRET` | (ঐচ্ছিক) random string | থাকলে Vercel Cron Bearer দিয়ে পাঠায়; না থাকলেও vercel-cron UA দিয়ে চলবে |
 
 Random secret বানাতে (নিজের পিসিতে):
 ```bash

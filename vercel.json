@@ -10,8 +10,12 @@
   },
   "crons": [
     {
-      "path": "/api/cron/telegram",
-      "schedule": "0 * * * *"
+      "path": "/api/cron/telegram?slot=morning",
+      "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/cron/telegram?slot=night",
+      "schedule": "0 16 * * *"
     }
   ],
   "rewrites": [
