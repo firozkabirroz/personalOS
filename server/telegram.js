@@ -3,20 +3,22 @@ const { db, getSetting, setSetting } = require('./db');
 const { logActivity } = require('./platform');
 
 // ============ Sending ============
-async function send(uid, text) {
+async function send(uid, text, replyMarkup) {
   const token = await getSetting(uid, 'telegram_bot_token');
   const chat = await getSetting(uid, 'telegram_chat_id');
   if (!token) throw new Error('Telegram is not configured. Add your bot token in Settings.');
   if (!chat) throw new Error('Telegram is not connected yet. Go to Settings and tap Connect.');
+  const body = {
+    chat_id: chat,
+    text: text.slice(0, 4000),
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+  };
+  if (replyMarkup) body.reply_markup = replyMarkup;
   const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chat,
-      text: text.slice(0, 4000),
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-    }),
+    body: JSON.stringify(body),
   });
   const data = await resp.json().catch(() => ({}));
   if (!data.ok) throw new Error('Telegram: ' + (data.description || `send failed (${resp.status})`));
@@ -64,7 +66,30 @@ async function pollUserBot(uid) {
         if (upd.message?.chat?.id) {
           await setSetting(uid, 'telegram_chat_id', String(upd.message.chat.id));
           await logActivity({ userId: uid, type: 'telegram_connected', message: 'Connected Telegram notifications' });
-          await sendRaw(state.token, upd.message.chat.id, '✅ Telegram connected! You will now receive your Personal OS notifications here.');
+          const { registerWebhook, mainKeyboard, setMode } = require('./telegram-bot');
+          try {
+            const base = process.env.PUBLIC_BASE_URL
+              || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '')
+              || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '');
+            if (base) await registerWebhook(uid, base);
+          } catch (e) {
+            console.error('Telegram setWebhook:', e.message);
+          }
+          await setMode(uid, 'menu');
+          await sendRaw(state.token, upd.message.chat.id,
+            '✅ Personal OS connected!\n\nUse the menu buttons below to manage tasks, projects, money, reports, and AI — same data as your dashboard.');
+          // send keyboard via full API
+          try {
+            await fetch(`https://api.telegram.org/bot${state.token}/sendMessage`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: upd.message.chat.id,
+                text: '🏠 Menu',
+                reply_markup: mainKeyboard(),
+              }),
+            });
+          } catch {}
           activePolls.delete(uid);
           return;
         }
@@ -267,7 +292,15 @@ router.post('/telegram/link-start', async (req, res) => {
 
 router.post('/telegram/test', async (req, res) => {
   try {
-    await send(req.userId, '✅ <b>Personal OS connected!</b>\nYou will receive:\n• ☀️ 10:00 — running projects\n• 🌙 22:00 — daily progress report\n• 📊 1st of each month — finance report\n• 🤖 AI task reports (if enabled)');
+    const { mainKeyboard, registerWebhook, setMode } = require('./telegram-bot');
+    const base = process.env.PUBLIC_BASE_URL
+      || (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '')
+      || `${req.protocol}://${req.get('host')}`;
+    try { await registerWebhook(req.userId, base); } catch (e) { console.error('Webhook:', e.message); }
+    await setMode(req.userId, 'menu');
+    await send(req.userId,
+      '✅ <b>Personal OS bot ready</b>\n\nMenu options:\n• 📋 Tasks — list / add / complete\n• 🚀 Projects — running / create\n• 💰 Money — expense / income\n• 🤖 AI Chat — same engine as dashboard\n• 📊 Reports — morning / night / finance\n\nTap a button below.',
+      mainKeyboard());
     res.json({ ok: true });
   } catch (e) { res.status(502).json({ error: e.message }); }
 });
@@ -304,5 +337,5 @@ router.post('/telegram/forward', async (req, res) => {
 
 module.exports = {
   router, send, escapeHtml, startScheduler, financeReport,
-  runTelegramTick: tick, maybeOpportunisticTick, morningReport, nightReport,
+  runTelegramTick: tick, maybeOpportunisticTick, morningReport, nightReport, userToday,
 };

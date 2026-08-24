@@ -162,7 +162,7 @@ export default async function settingsView() {
       section('book', 'Notion', 'One-click connect. Then import pages into Brainstorming.',
         el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' } }, connectNotion, nStatus, disconnectNotion, importNotion)),
 
-      section('bell', 'Telegram notifications', 'Optional. Create a bot with @BotFather, paste its token, then tap Save & Connect.',
+      section('bell', 'Telegram notifications', 'Create a bot with @BotFather, paste its token, then Save & Connect. After connect you get a menu to manage tasks/projects/money/AI from Telegram — same data as the dashboard.',
         el('div', { class: 'field' }, el('label', {}, 'Bot token'), tgToken),
         el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', margin: '10px 0 14px' } }, connectTg, tgStatus, disconnectTg),
         el('div', { class: 'field' }, el('label', {}, 'Timezone'), tgTz),

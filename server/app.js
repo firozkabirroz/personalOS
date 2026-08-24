@@ -61,6 +61,23 @@ async function telegramCron(req, res) {
 app.get('/api/cron/telegram', telegramCron);
 app.post('/api/cron/telegram', telegramCron);
 
+// Telegram bot webhook (no auth — secret is in the URL)
+app.post('/api/telegram/webhook/:uid/:secret', async (req, res) => {
+  try {
+    const { webhookSecret, handleUpdate } = require('./telegram-bot');
+    const uid = Number(req.params.uid);
+    if (!uid || req.params.secret !== webhookSecret(uid)) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    // Must await on Vercel — work after res.json is not reliable on serverless.
+    await handleUpdate(uid, req.body || {});
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Telegram webhook:', e);
+    if (!res.headersSent) res.status(500).json({ error: e.message });
+  }
+});
+
 // OAuth callbacks must be reachable without the Bearer header
 app.use('/api', (req, res, next) => {
   if (req.path === '/google/callback' || req.path === '/notion/callback') {

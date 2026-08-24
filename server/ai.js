@@ -605,41 +605,33 @@ router.get('/ai/usage', async (req, res) => {
   res.json({ unlimited: true, models: await listActiveModels() });
 });
 
-router.post('/ai/chat', (req, res, next) => {
-  chatUpload.array('files', 4)(req, res, (err) => {
-    if (err) return res.status(400).json({ error: err.message });
-    next();
-  });
-}, async (req, res) => {
-  const uid = req.userId;
-  const message = (req.body?.message || '').trim();
-  const modelDbId = req.body?.model_id ? Number(req.body.model_id) : null;
-  if (!message && !(req.files || []).length) return res.status(400).json({ error: 'Message is empty' });
+async function runUserChat(uid, message, opts = {}) {
+  const text = String(message || '').trim();
+  const files = opts.files || [];
+  if (!text && !files.length) throw Object.assign(new Error('Message is empty'), { status: 400 });
 
   const user = await db.prepare('SELECT id, name, username, role FROM users WHERE id=?').get(uid);
-  const route = await resolveAIRoute(modelDbId);
-  if (route.error) return res.status(400).json({ error: route.error });
+  const route = await resolveAIRoute(opts.modelDbId ? Number(opts.modelDbId) : null);
+  if (route.error) throw Object.assign(new Error(route.error), { status: 400 });
 
-  // Resolve the conversation this message belongs to — create one if needed
   let conv = null;
-  const reqConvId = Number(req.body?.conversation_id) || 0;
+  const reqConvId = Number(opts.conversationId) || 0;
   if (reqConvId) conv = await db.prepare('SELECT * FROM conversations WHERE id=? AND user_id=?').get(reqConvId, uid);
   if (!conv) {
-    const autoTitle = (message || 'New chat').slice(0, 60);
+    const autoTitle = (opts.title || text || 'New chat').slice(0, 60);
     const info = await db.prepare('INSERT INTO conversations (user_id, title) VALUES (?,?)').run(uid, autoTitle);
     conv = await db.prepare('SELECT * FROM conversations WHERE id=?').get(info.lastInsertRowid);
-  } else if (conv.title === 'New chat' && message) {
-    await db.prepare('UPDATE conversations SET title=? WHERE id=?').run(message.slice(0, 60), conv.id);
-    conv.title = message.slice(0, 60);
+  } else if (conv.title === 'New chat' && text) {
+    await db.prepare('UPDATE conversations SET title=? WHERE id=?').run(text.slice(0, 60), conv.id);
+    conv.title = text.slice(0, 60);
   }
 
   const { provider, apiKey, model, baseUrl, modelRow } = route;
-  const files = req.files || [];
   const parts = files.map(fileToContentPart);
-  const userContent = buildUserContent(message || '(see attached files)', parts);
-  const attachmentMeta = JSON.stringify(files.map(f => ({ name: f.originalname, mime: f.mimetype, size: f.size, stored: f.filename })));
+  const userContent = buildUserContent(text || '(see attached files)', parts);
+  const attachmentMeta = JSON.stringify(files.map((f) => ({ name: f.originalname, mime: f.mimetype, size: f.size, stored: f.filename })));
 
-  const largeTask = (message || '').length > 1200;
+  const largeTask = text.length > 1200;
   const context = largeTask ? '' : await buildContext(uid);
   const system = largeTask
     ? `You are a personal AI assistant inside Personal OS. Today's date is ${new Date().toISOString().slice(0, 10)}.
@@ -662,46 +654,60 @@ ${context || '(No data yet — the user has not added anything.)'}
 
   const history = (await db.prepare('SELECT role, content FROM chats WHERE user_id=? AND conversation_id=? ORDER BY id DESC LIMIT 10').all(uid, conv.id)).reverse();
   const messages = [
-    ...history.map(h => ({ role: h.role, content: h.content })),
+    ...history.map((h) => ({ role: h.role, content: h.content })),
     { role: 'user', content: typeof userContent === 'string' ? userContent : userContent.text },
   ];
 
+  const changes = [];
+  const contentArg = parts.length ? userContent : null;
+  let reply;
+  if (provider === 'anthropic') {
+    reply = await callAnthropic({ apiKey, model, system, messages, userContent: contentArg, uid, changes });
+  } else {
+    reply = await callOpenAI({ apiKey, model, baseUrl, system, messages, userContent: contentArg, provider, uid, changes });
+  }
+  if (changes.length && !/✓\s+(created|updated|deleted|logged)/i.test(reply)) {
+    reply = (reply || '').trim() + formatChanges(changes);
+  }
+
+  const displayMsg = text || '(attachment)';
+  await db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments, conversation_id) VALUES (?,?,?,?,?,?)')
+    .run(uid, 'user', displayMsg, modelRow.id, attachmentMeta, conv.id);
+  await db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments, conversation_id) VALUES (?,?,?,?,?,?)')
+    .run(uid, 'assistant', reply, modelRow.id, '', conv.id);
+  await db.prepare("UPDATE conversations SET updated_at = datetime('now') WHERE id=?").run(conv.id);
+
+  if (!opts.skipTelegramForward && await getSetting(uid, 'telegram_ai_reports') === 'on') {
+    const { send, escapeHtml } = require('./telegram');
+    send(uid, `🤖 <b>AI Task Report</b>\n\n📝 <i>${escapeHtml(displayMsg.slice(0, 300))}</i>\n\n${escapeHtml(reply)}`)
+      .catch((e) => console.error('Telegram AI forward:', e.message));
+  }
+
+  return { reply, changes, model: { id: modelRow.id, name: modelRow.name }, conversation: { id: conv.id, title: conv.title } };
+}
+
+router.post('/ai/chat', (req, res, next) => {
+  chatUpload.array('files', 4)(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message });
+    next();
+  });
+}, async (req, res) => {
   try {
-    let reply;
-    const changes = [];
-    const contentArg = parts.length ? userContent : null;
-    if (provider === 'anthropic') {
-      reply = await callAnthropic({ apiKey, model, system, messages, userContent: contentArg, uid, changes });
-    } else {
-      reply = await callOpenAI({ apiKey, model, baseUrl, system, messages, userContent: contentArg, provider, uid, changes });
-    }
-    if (changes.length && !/✓\s+(created|updated|deleted|logged)/i.test(reply)) {
-      reply = (reply || '').trim() + formatChanges(changes);
-    }
-
-    const displayMsg = message || '(attachment)';
-    await db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments, conversation_id) VALUES (?,?,?,?,?,?)')
-      .run(uid, 'user', displayMsg, modelRow.id, attachmentMeta, conv.id);
-    await db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments, conversation_id) VALUES (?,?,?,?,?,?)')
-      .run(uid, 'assistant', reply, modelRow.id, '', conv.id);
-    await db.prepare("UPDATE conversations SET updated_at = datetime('now') WHERE id=?").run(conv.id);
-
-    if (await getSetting(uid, 'telegram_ai_reports') === 'on') {
-      const { send, escapeHtml } = require('./telegram');
-      send(uid, `🤖 <b>AI Task Report</b>\n\n📝 <i>${escapeHtml(displayMsg.slice(0, 300))}</i>\n\n${escapeHtml(reply)}`)
-        .catch(e => console.error('Telegram AI forward:', e.message));
-    }
-
-    res.json({ reply, changes, model: { id: modelRow.id, name: modelRow.name }, conversation: { id: conv.id, title: conv.title } });
+    const result = await runUserChat(req.userId, req.body?.message, {
+      modelDbId: req.body?.model_id,
+      conversationId: req.body?.conversation_id,
+      files: req.files || [],
+    });
+    res.json(result);
   } catch (e) {
-    // clean up uploaded files on failure
-    for (const f of files) {
+    for (const f of req.files || []) {
       try { fs.unlinkSync(f.path); } catch {}
     }
-    res.status(502).json({ error: e.message || 'The AI request failed. Try a shorter message.' });
+    res.status(e.status || 502).json({ error: e.message || 'The AI request failed. Try a shorter message.' });
   }
 });
 
 module.exports = router;
 module.exports.router = router;
 module.exports.listActiveModels = listActiveModels;
+module.exports.runUserChat = runUserChat;
