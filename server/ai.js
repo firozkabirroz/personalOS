@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { db, getSetting, DATA_DIR } = require('./db');
 const { ownerId } = require('./platform');
 const { PROVIDERS, credsFor, modelReady, chatCompletionsUrl, formatProviderError, formatFetchError, sanitizeKey, openaiCompatHeaders, isLocalAiUrl, isGroqEndpoint } = require('./ai-providers');
+const { openaiTools, anthropicTools, executeTool } = require('./ai-tools');
 
 const router = express.Router();
 
@@ -33,49 +34,49 @@ async function buildContext(uid) {
   const monthStart = today.slice(0, 8) + '01';
   const lines = [];
 
-  const tasks = await db.prepare("SELECT title, date, time, priority, status FROM tasks WHERE user_id=? AND (status != 'done' OR date >= ?) ORDER BY date LIMIT 40").all(uid, today);
+  const tasks = await db.prepare("SELECT id, title, date, time, priority, status FROM tasks WHERE user_id=? AND (status != 'done' OR date >= ?) ORDER BY date LIMIT 40").all(uid, today);
   if (tasks.length) {
     lines.push('## Tasks');
-    for (const t of tasks) lines.push(`- [${t.status}] ${t.title} (date: ${t.date}${t.time ? ' ' + t.time : ''}, priority: ${t.priority})`);
+    for (const t of tasks) lines.push(`- #${t.id} [${t.status}] ${t.title} (date: ${t.date}${t.time ? ' ' + t.time : ''}, priority: ${t.priority})`);
   }
 
   const projects = await db.prepare('SELECT id, name, description, status, start_date, end_date, progress FROM projects WHERE user_id=? LIMIT 30').all(uid);
   if (projects.length) {
     lines.push('## Projects');
     for (const p of projects) {
-      lines.push(`- ${p.name} [${p.status}] ${p.start_date || '?'} → ${p.end_date || '?'} (${p.progress}% done)${p.description ? ': ' + p.description.slice(0, 150) : ''}`);
-      const items = await db.prepare('SELECT content, done FROM project_items WHERE project_id=? ORDER BY done ASC, position ASC LIMIT 12').all(p.id);
-      for (const it of items) lines.push(`    ${it.done ? '[x]' : '[ ]'} ${it.content}`);
+      lines.push(`- #${p.id} ${p.name} [${p.status}] ${p.start_date || '?'} → ${p.end_date || '?'} (${p.progress}% done)${p.description ? ': ' + p.description.slice(0, 150) : ''}`);
+      const items = await db.prepare('SELECT id, content, done FROM project_items WHERE project_id=? ORDER BY done ASC, position ASC LIMIT 12').all(p.id);
+      for (const it of items) lines.push(`    #${it.id} ${it.done ? '[x]' : '[ ]'} ${it.content}`);
     }
   }
 
-  const plans = await db.prepare('SELECT title, details, estimate_date, status FROM plans WHERE user_id=? LIMIT 20').all(uid);
+  const plans = await db.prepare('SELECT id, title, details, estimate_date, status FROM plans WHERE user_id=? LIMIT 20').all(uid);
   if (plans.length) {
     lines.push('## Future plans');
-    for (const p of plans) lines.push(`- ${p.title} [${p.status}] est. ${p.estimate_date || 'TBD'}${p.details ? ': ' + p.details.slice(0, 150) : ''}`);
+    for (const p of plans) lines.push(`- #${p.id} ${p.title} [${p.status}] est. ${p.estimate_date || 'TBD'}${p.details ? ': ' + p.details.slice(0, 150) : ''}`);
   }
 
-  const ideas = await db.prepare('SELECT title, content, tags FROM ideas WHERE user_id=? ORDER BY pinned DESC, updated_at DESC LIMIT 20').all(uid);
+  const ideas = await db.prepare('SELECT id, title, content, tags FROM ideas WHERE user_id=? ORDER BY pinned DESC, updated_at DESC LIMIT 20').all(uid);
   if (ideas.length) {
     lines.push('## Brainstorming notes');
-    for (const i of ideas) lines.push(`- ${i.title}${i.tags ? ' [' + i.tags + ']' : ''}: ${(i.content || '').slice(0, 200)}`);
+    for (const i of ideas) lines.push(`- #${i.id} ${i.title}${i.tags ? ' [' + i.tags + ']' : ''}: ${(i.content || '').slice(0, 200)}`);
   }
 
   const expTotal = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE user_id=? AND date >= ? AND type='expense'").get(uid, monthStart)).t;
   const incTotal = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM expenses WHERE user_id=? AND date >= ? AND type='income'").get(uid, monthStart)).t;
   const expByCat = await db.prepare("SELECT category, SUM(amount) t FROM expenses WHERE user_id=? AND date >= ? AND type='expense' GROUP BY category ORDER BY t DESC").all(uid, monthStart);
-  const recentExp = await db.prepare('SELECT title, amount, category, date, type FROM expenses WHERE user_id=? ORDER BY date DESC LIMIT 25').all(uid);
+  const recentExp = await db.prepare('SELECT id, title, amount, category, date, type FROM expenses WHERE user_id=? ORDER BY date DESC LIMIT 25').all(uid);
   if (recentExp.length) {
     lines.push(`## Money (this month: income ${Number(incTotal).toFixed(2)}, expenses ${Number(expTotal).toFixed(2)}, balance ${(Number(incTotal) - Number(expTotal)).toFixed(2)})`);
     lines.push('Spending by category this month: ' + (expByCat.map(c => `${c.category}: ${Number(c.t).toFixed(2)}`).join(', ') || 'none'));
-    for (const e of recentExp) lines.push(`- ${e.date} [${e.type}] ${e.title}: ${e.amount} (${e.category})`);
+    for (const e of recentExp) lines.push(`- #${e.id} ${e.date} [${e.type}] ${e.title}: ${e.amount} (${e.category})`);
   }
 
-  const debts = await db.prepare("SELECT person, type, amount, paid, due_date, status FROM debts WHERE user_id=? AND status='active' LIMIT 20").all(uid);
+  const debts = await db.prepare("SELECT id, person, type, amount, paid, due_date, status FROM debts WHERE user_id=? AND status='active' LIMIT 20").all(uid);
   if (debts.length) {
     lines.push('## Debts & loans (active)');
     for (const d of debts) {
-      lines.push(`- ${d.type === 'borrowed' ? 'I owe' : 'Owes me'} ${d.person}: ${(d.amount - d.paid).toFixed(2)} remaining (of ${d.amount})${d.due_date ? ', due ' + d.due_date : ''}`);
+      lines.push(`- #${d.id} ${d.type === 'borrowed' ? 'I owe' : 'Owes me'} ${d.person}: ${(d.amount - d.paid).toFixed(2)} remaining (of ${d.amount})${d.due_date ? ', due ' + d.due_date : ''}`);
     }
   }
 
@@ -85,7 +86,7 @@ async function buildContext(uid) {
     for (const i of invs) {
       const profit = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM investment_txns WHERE investment_id=? AND type='profit'").get(i.id)).t;
       const payout = (await db.prepare("SELECT COALESCE(SUM(amount),0) t FROM investment_txns WHERE investment_id=? AND type='payout'").get(i.id)).t;
-      lines.push(`- [${i.type}] ${i.name}${i.partner ? ' (with ' + i.partner + ')' : ''}: capital ${i.amount}, ${i.type === 'made' ? 'profit received ' + Number(profit).toFixed(2) : 'returns paid ' + Number(payout).toFixed(2)}${i.expected_return ? ', expected: ' + i.expected_return : ''} [${i.status}]`);
+      lines.push(`- #${i.id} [${i.type}] ${i.name}${i.partner ? ' (with ' + i.partner + ')' : ''}: capital ${i.amount}, ${i.type === 'made' ? 'profit received ' + Number(profit).toFixed(2) : 'returns paid ' + Number(payout).toFixed(2)}${i.expected_return ? ', expected: ' + i.expected_return : ''} [${i.status}]`);
     }
   }
 
@@ -94,7 +95,7 @@ async function buildContext(uid) {
       FROM habits h WHERE h.user_id=? AND h.archived=0`).all(uid);
   if (habits.length) {
     lines.push('## Habits (completions in last 30 days)');
-    for (const h of habits) lines.push(`- ${h.name}: ${h.last30}/30 days`);
+    for (const h of habits) lines.push(`- #${h.id} ${h.name}: ${h.last30}/30 days`);
   }
 
   const health = await db.prepare('SELECT date, weight, sleep_hours, water_glasses, steps, mood FROM health WHERE user_id=? ORDER BY date DESC LIMIT 14').all(uid);
@@ -103,16 +104,16 @@ async function buildContext(uid) {
     for (const h of health) lines.push(`- ${h.date}: weight=${h.weight ?? '-'}, sleep=${h.sleep_hours ?? '-'}h, water=${h.water_glasses ?? '-'}, steps=${h.steps ?? '-'}, mood=${h.mood ?? '-'}`);
   }
 
-  const trips = await db.prepare('SELECT destination, start_date, end_date, budget, status, notes FROM trips WHERE user_id=? LIMIT 10').all(uid);
+  const trips = await db.prepare('SELECT id, destination, start_date, end_date, budget, status, notes FROM trips WHERE user_id=? LIMIT 10').all(uid);
   if (trips.length) {
     lines.push('## Trips');
-    for (const t of trips) lines.push(`- ${t.destination} [${t.status}] ${t.start_date || '?'} → ${t.end_date || '?'}, budget ${t.budget}`);
+    for (const t of trips) lines.push(`- #${t.id} ${t.destination} [${t.status}] ${t.start_date || '?'} → ${t.end_date || '?'}, budget ${t.budget}`);
   }
 
-  const events = await db.prepare('SELECT title, date, start_time FROM events WHERE user_id=? AND date >= ? ORDER BY date LIMIT 15').all(uid, today);
+  const events = await db.prepare('SELECT id, title, date, start_time FROM events WHERE user_id=? AND date >= ? ORDER BY date LIMIT 15').all(uid, today);
   if (events.length) {
     lines.push('## Upcoming calendar events');
-    for (const e of events) lines.push(`- ${e.date}${e.start_time ? ' ' + e.start_time : ''}: ${e.title}`);
+    for (const e of events) lines.push(`- #${e.id} ${e.date}${e.start_time ? ' ' + e.start_time : ''}: ${e.title}`);
   }
 
   return lines.join('\n').slice(0, 14000);
@@ -217,7 +218,7 @@ function buildUserContent(message, parts) {
   return { text, blocks };
 }
 
-async function callAnthropic({ apiKey, model, system, messages, userContent }) {
+async function callAnthropic({ apiKey, model, system, messages, userContent, uid, changes }) {
   const formatted = messages.map(m => {
     if (typeof m.content === 'string') return { role: m.role, content: m.content };
     return m;
@@ -236,27 +237,75 @@ async function callAnthropic({ apiKey, model, system, messages, userContent }) {
     formatted[formatted.length - 1] = { role: 'user', content };
   }
 
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({ model: model || 'claude-sonnet-4-6', max_tokens: 2048, system, messages: formatted }),
-  });
-  const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(formatProviderError(resp.status, data?.error?.message || `Anthropic API error (${resp.status})`, {
-      host: 'api.anthropic.com', model, apiKey, provider: 'anthropic',
-    }));
+  const tools = uid ? anthropicTools() : null;
+  let useTools = !!tools;
+  for (let round = 0; round < 6; round++) {
+    const payload = { model: model || 'claude-sonnet-4-6', max_tokens: 2048, system, messages: formatted };
+    if (useTools) payload.tools = tools;
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      const raw = data?.error?.message || `Anthropic API error (${resp.status})`;
+      if (useTools && looksLikeToolsUnsupported(raw)) {
+        useTools = false;
+        continue;
+      }
+      throw new Error(formatProviderError(resp.status, raw, {
+        host: 'api.anthropic.com', model, apiKey, provider: 'anthropic',
+      }));
+    }
+    const blocks = data.content || [];
+    const toolUses = blocks.filter((b) => b.type === 'tool_use');
+    const text = blocks.map((b) => b.text || '').join('').trim();
+    if (!toolUses.length) return text;
+    formatted.push({ role: 'assistant', content: blocks });
+    const results = await applyToolCalls(uid, toolUses, changes);
+    formatted.push({
+      role: 'user',
+      content: results.map((r) => ({
+        type: 'tool_result',
+        tool_use_id: r.id,
+        content: JSON.stringify(r.result).slice(0, 4000),
+      })),
+    });
   }
-  return (data.content || []).map(b => b.text || '').join('');
+  return 'Done — I applied the requested changes.';
 }
 
 function clipText(text, n) {
   const s = String(text || '');
   return s.length <= n ? s : s.slice(0, n) + '\n…[truncated]';
+}
+
+function formatChanges(changes) {
+  if (!changes.length) return '';
+  const lines = changes.map((c) => `✓ ${c.action} ${c.resource}${c.name ? ': ' + c.name : ''}${c.id ? ' (#' + c.id + ')' : ''}`);
+  return '\n\n' + lines.join('\n');
+}
+
+function looksLikeToolsUnsupported(raw) {
+  return /tool|function.?call|unknown.?param|extra.?input|unsupported|not supported|unrecognized/i.test(String(raw || ''));
+}
+
+async function applyToolCalls(uid, calls, changes) {
+  const bag = changes || [];
+  const results = [];
+  for (const call of calls) {
+    const name = call.name || call.function?.name;
+    const raw = call.input != null ? call.input : call.function?.arguments;
+    const out = await executeTool(uid, name, raw);
+    if (out.change) bag.push(out.change);
+    results.push({ id: call.id, name, result: out.result });
+  }
+  return results;
 }
 
 function openaiChatBody({ model, system, formatted, groqReasoning, large, provider }) {
@@ -329,7 +378,61 @@ async function openAiRequest(url, apiKey, body, deadline, baseUrl) {
   }
 }
 
-async function callOpenAI({ apiKey, model, baseUrl, system, messages, userContent, provider }) {
+async function callOpenAITools({ url, apiKey, baseUrl, body, deadline, uid, provider, model, changes }) {
+  const tools = openaiTools();
+  const messages = body.messages.slice();
+  const bag = changes || [];
+  let usedTools = true;
+  for (let round = 0; round < 6; round++) {
+    const reqBody = {
+      ...body,
+      messages,
+      stream: false,
+    };
+    if (usedTools) {
+      reqBody.tools = tools;
+      reqBody.tool_choice = 'auto';
+    }
+    let resp;
+    try {
+      resp = await openAiRequest(url, apiKey, reqBody, deadline, baseUrl);
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+      return null;
+    }
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const raw = String(data?.error?.message || data?.error || '');
+      if (usedTools && looksLikeToolsUnsupported(raw)) {
+        usedTools = false;
+        continue;
+      }
+      let host = url;
+      try { host = new URL(url).hostname; } catch {}
+      throw new Error(formatProviderError(resp.status, raw || `API error (${resp.status})`, { host, model, apiKey, provider }));
+    }
+    const msg = data.choices?.[0]?.message || {};
+    const calls = msg.tool_calls || [];
+    const text = String(msg.content || '').trim();
+    if (!calls.length) return text || (bag.length ? 'Done — I applied the requested changes.' : '');
+    const results = await applyToolCalls(uid, calls.map((c) => ({
+      id: c.id,
+      name: c.function?.name,
+      input: c.function?.arguments,
+    })), bag);
+    messages.push({ role: 'assistant', content: msg.content || null, tool_calls: calls });
+    for (const r of results) {
+      messages.push({
+        role: 'tool',
+        tool_call_id: r.id,
+        content: JSON.stringify(r.result).slice(0, 4000),
+      });
+    }
+  }
+  return bag.length ? 'Done — I applied the requested changes.' : null;
+}
+
+async function callOpenAI({ apiKey, model, baseUrl, system, messages, userContent, provider, uid, changes }) {
   const url = chatCompletionsUrl(baseUrl);
   const formatted = messages.map((m) => ({
     role: m.role,
@@ -354,6 +457,13 @@ async function callOpenAI({ apiKey, model, baseUrl, system, messages, userConten
     && (id.includes('gpt-oss') || id.includes('qwen3.6') || id.startsWith('groq/'));
   const body = openaiChatBody({ model, system, formatted, groqReasoning, large, provider });
   const deadline = Date.now() + 52000;
+
+  if (uid) {
+    const toolText = await callOpenAITools({
+      url, apiKey, baseUrl, body, deadline, uid, provider, model, changes,
+    });
+    if (toolText != null) return toolText;
+  }
 
   let resp;
   try {
@@ -532,12 +642,19 @@ router.post('/ai/chat', (req, res, next) => {
   const largeTask = (message || '').length > 1200;
   const context = largeTask ? '' : await buildContext(uid);
   const system = largeTask
-    ? `You are a personal AI assistant. Today's date is ${new Date().toISOString().slice(0, 10)}.
-The user asked for a large task. Start with a short plan (max 6 bullets), then fully complete the first part. End with: "Send continue for the next part." Do not try to finish everything in one reply.`
+    ? `You are a personal AI assistant inside Personal OS. Today's date is ${new Date().toISOString().slice(0, 10)}.
+You can READ and WRITE the user's live data with tools: tasks, projects, project checklist items, plans, ideas, expenses, habits, trips, events, debts, investments, health.
+When the user asks to add/update/complete/delete something, call the tools — do not only describe what you would do.
+The user asked for a large writing task. Start with a short plan (max 6 bullets), then fully complete the first part. End with: "Send continue for the next part."`
     : `You are the personal AI assistant inside "${user?.name || user?.username}"'s Personal OS dashboard.
 Today's date is ${new Date().toISOString().slice(0, 10)}.
-You have read access to their live data below. Use it to give specific, practical, personalised answers — reference their actual tasks, projects, expenses, habits, health and trips by name when relevant. Be concise and actionable. If data is missing for a question, say so and suggest what to track.
-If the user asks for a very large deliverable, complete the first part thoroughly and invite them to say "continue".
+You have READ and WRITE access to their live data via tools (os_query, os_create, os_update, os_delete, os_toggle_habit, os_log_health).
+Use tools to create/update/complete tasks, running projects, project checklist items, plans, ideas, expenses/income, habits, trips, calendar events, debts, investments, and health logs whenever the user asks.
+Rules:
+- Prefer tools over guessing. Use record ids from the snapshot or os_query before updates.
+- After making changes, briefly confirm what you did (names + ids).
+- Be concise and actionable. Reply in the user's language.
+- If they ask a large writing deliverable, complete the first part and invite "continue".
 
 === USER DATA SNAPSHOT ===
 ${context || '(No data yet — the user has not added anything.)'}
@@ -551,9 +668,16 @@ ${context || '(No data yet — the user has not added anything.)'}
 
   try {
     let reply;
+    const changes = [];
     const contentArg = parts.length ? userContent : null;
-    if (provider === 'anthropic') reply = await callAnthropic({ apiKey, model, system, messages, userContent: contentArg });
-    else reply = await callOpenAI({ apiKey, model, baseUrl, system, messages, userContent: contentArg, provider });
+    if (provider === 'anthropic') {
+      reply = await callAnthropic({ apiKey, model, system, messages, userContent: contentArg, uid, changes });
+    } else {
+      reply = await callOpenAI({ apiKey, model, baseUrl, system, messages, userContent: contentArg, provider, uid, changes });
+    }
+    if (changes.length && !/✓\s+(created|updated|deleted|logged)/i.test(reply)) {
+      reply = (reply || '').trim() + formatChanges(changes);
+    }
 
     const displayMsg = message || '(attachment)';
     await db.prepare('INSERT INTO chats (user_id, role, content, model_id, attachments, conversation_id) VALUES (?,?,?,?,?,?)')
@@ -568,7 +692,7 @@ ${context || '(No data yet — the user has not added anything.)'}
         .catch(e => console.error('Telegram AI forward:', e.message));
     }
 
-    res.json({ reply, model: { id: modelRow.id, name: modelRow.name }, conversation: { id: conv.id, title: conv.title } });
+    res.json({ reply, changes, model: { id: modelRow.id, name: modelRow.name }, conversation: { id: conv.id, title: conv.title } });
   } catch (e) {
     // clean up uploaded files on failure
     for (const f of files) {

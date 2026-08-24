@@ -3,10 +3,10 @@ import { el, icon, icons, confirmModal, toast, renderMarkdown } from '../ui.js';
 
 const SUGGESTIONS = [
   'What should I focus on today?',
-  'Summarize my running projects and what\'s at risk',
-  'Where am I overspending this month?',
-  'How are my habits and health trending?',
-  'Help me plan my next trip within budget',
+  'Create a task: call the client tomorrow at 11am',
+  'Add a running project called Website Redesign with 3 checklist items',
+  'Mark my highest priority task as done',
+  'Log today\'s expense: lunch 450 BDT food',
 ];
 
 export default async function aiView() {
@@ -91,7 +91,7 @@ export default async function aiView() {
     return el('div', { class: 'welcome-hero' },
       heroIc,
       el('h3', {}, 'Your personal AI — free & unlimited'),
-      el('p', {}, 'It can see your tasks, projects, expenses, habits and more. Start a new topic anytime — every conversation is saved.'),
+      el('p', {}, 'It can read and write your tasks, running projects, expenses, habits and more. Ask it to create or update anything — every conversation is saved.'),
       el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '8px', justifyContent: 'center' } },
         SUGGESTIONS.map(s => el('button', { class: 'btn ghost sm', onclick: () => { input.value = s; send(); } }, s))));
   }
